@@ -1,0 +1,688 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wirebook</title>
+<!--
+  Classic scripts on purpose, not ES modules: modules are CORS-blocked over
+  file://, and opening this file straight out of a clone has to keep working.
+  The settings payload below is inline for the same reason, fetch() being blocked
+  on file:// too. Load order matters: js-yaml, then core, then app.
+-->
+<link rel="stylesheet" href="css/wirebook.css">
+</head>
+<body>
+<header>
+  <span class="brand">wirebook</span>
+  <span class="file" id="hFile">no file</span>
+  <span class="dot" id="hDirty" hidden>&#9679;</span>
+  <span class="spacer"></span>
+  <span class="stat" id="hStat"></span>
+  <span id="hProb"></span>
+  <button id="bLink" title="copy a link to what is on screen">link</button>
+  <button id="bUndo" title="Ctrl+Z">undo</button>
+  <button id="bRedo" title="Ctrl+Shift+Z">redo</button>
+  <button id="bOpen">Open</button>
+  <button id="bSave" class="btn-primary" title="Ctrl+S">Save</button>
+</header>
+
+<div id="banner" hidden></div>
+<main>
+  <nav id="nav"></nav>
+  <section id="view"><div class="empty">Open an inventory.yaml to begin, or start a new one.</div></section>
+</main>
+
+<dialog id="dlg">
+  <div class="head" id="dlgHead"></div>
+  <div class="body" id="dlgBody"></div>
+  <div class="foot" id="dlgFoot"></div>
+</dialog>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+<script src="third_party/js-yaml.min.js"></script>
+<script type="application/yaml" id="builtinSettings">
+# yaml-language-server: $schema=./schema/settings.yaml
+#
+# Editor settings: custom field definitions and reusable node shapes. This file
+# describes how to *interpret and enter* inventory data; it holds no inventory
+# data itself, which is why it is separate from inventory.yaml.
+#
+# fields
+#   A field spec is a first-class definition of something you track. The spec's
+#   `id` IS the meta key, so `meta: {speed: 2.5}` on a port is the `speed` field.
+#   Declaring it buys you a typed input, a unit shown in the UI, enum dropdowns,
+#   and range checking. `meta` stays open: an undeclared key is still legal, the
+#   UI just marks it and offers to declare it.
+#
+#   Units live on the spec, never in the value. `speed: 2.5` with unit gbps stays
+#   sortable and comparable; `speed: "2.5 gbps"` is prose you have to parse back.
+#   Store values in the spec's unit.
+#
+# templates
+#   Node shapes with {{placeholders}}, so the second Flex Mini is two fields
+#   rather than five ports retyped.
+
+fields:
+  # ---------------------------------------------------------------- identity
+  - { id: vendor, label: Vendor, type: string, applies_to: [node] }
+  - { id: model, label: Model, type: string, applies_to: [node] }
+  - { id: serial, label: Serial number, type: string, applies_to: [node] }
+  - { id: asset_tag, label: Asset tag, type: string, applies_to: [node] }
+  - { id: ansible_host, label: Ansible host, type: string, applies_to: [node],
+      description: Bridge to the Ansible inventory, where the config lives }
+  - { id: k8s_node, label: Kubernetes node name, type: string, applies_to: [node],
+      description: Name in kubectl get nodes. Expected to differ from the hostname; record both }
+
+  # ------------------------------------------------------------ machine specs
+  - { id: cpu, label: CPU, type: string, applies_to: [node] }
+  - { id: cores, label: Cores, type: integer, applies_to: [node] }
+  - { id: threads, label: Threads, type: integer, applies_to: [node] }
+  - { id: ram, label: RAM, type: number, unit: GB, applies_to: [node] }
+  - { id: ram_slots, label: RAM slots, type: integer, applies_to: [node] }
+  - { id: gpu, label: GPU, type: string, applies_to: [node] }
+  - { id: storage, label: Storage, type: string, applies_to: [node],
+      description: Headline only. Model a drive as a child node when the slot matters }
+  - { id: motherboard, label: Motherboard, type: string, applies_to: [node] }
+  - { id: bios_version, label: BIOS version, type: string, applies_to: [node] }
+  - { id: firmware, label: Firmware, type: string, applies_to: [node, pluggable] }
+  - { id: os, label: OS, type: string, applies_to: [node] }
+
+  # ------------------------------------------------------------------- speed
+  - { id: speed, label: Link speed, type: number, unit: gbps, applies_to: [pluggable, link] }
+  - { id: duplex, label: Duplex, type: enum, enum: [full, half], applies_to: [pluggable] }
+  - { id: mtu, label: MTU, type: integer, unit: bytes, applies_to: [pluggable] }
+  - { id: lag, label: LAG / bond group, type: string, applies_to: [pluggable],
+      description: Name shared by the ports bonded together }
+  - { id: pcie_gen, label: PCIe generation, type: integer, applies_to: [pluggable] }
+  - { id: pcie_lanes, label: PCIe lanes, type: integer, applies_to: [pluggable] }
+  - { id: sata_gen, label: SATA generation, type: integer, applies_to: [pluggable],
+      description: 3 means SATA III }
+  - { id: nvme_gen, label: NVMe generation, type: integer, applies_to: [pluggable] }
+  - { id: usb_gen, label: USB generation, type: string, applies_to: [pluggable] }
+  - { id: iface, label: OS interface, type: string, applies_to: [pluggable],
+      description: What the operating system calls this physical port, e.g. enp1s0 or igc0 }
+  - { id: wifi, label: Wireless only, type: boolean, applies_to: [node],
+      description: No ethernet port. A wireless association is not a cable, so it is recorded here rather than as a link }
+  - { id: ssid, label: SSID, type: string, applies_to: [vlan, node],
+      description: The wireless network this VLAN is exposed as. An SSID is a named logical network like a VLAN, so it is recorded on the VLAN rather than as its own object }
+  - { id: network_profile, label: Ansible network profile, type: string, applies_to: [node],
+      description: Pointer into the Ansible inventory. The profile itself is config and lives there, not here }
+  - { id: bridge, label: Bridge / bond, type: string, applies_to: [pluggable],
+      description: The Proxmox bridge or bond this port is enslaved to, e.g. vmbr0 }
+
+  # ------------------------------------------------------------------- power
+  # in and out are separate because an adapter has both
+  - { id: volts, label: Volts, type: number, unit: V, applies_to: [node, pluggable],
+      description: Use when there is only one side }
+  - { id: amps, label: Amps, type: number, unit: A, applies_to: [node, pluggable] }
+  - { id: watts, label: Watts, type: number, unit: W, applies_to: [node, pluggable] }
+  - { id: volts_in, label: Input volts, type: number, unit: V, applies_to: [node, pluggable] }
+  - { id: amps_in, label: Input amps, type: number, unit: A, applies_to: [node, pluggable] }
+  - { id: volts_out, label: Output volts, type: number, unit: V, applies_to: [node, pluggable] }
+  - { id: amps_out, label: Output amps, type: number, unit: A, applies_to: [node, pluggable] }
+  - { id: watts_max, label: Rated max watts, type: number, unit: W, applies_to: [node, pluggable],
+      description: Rated ceiling, not measured draw }
+  - { id: watts_idle, label: Idle watts, type: number, unit: W, applies_to: [node] }
+  - { id: watts_measured, label: Measured watts, type: number, unit: W, applies_to: [node],
+      description: What you actually saw on a meter }
+  - { id: poe_budget, label: PoE budget, type: number, unit: W, applies_to: [node],
+      description: Total PoE a switch can supply across all ports }
+
+  # --------------------------------------------------------------------- PoE
+  - { id: poe_standard, label: PoE standard, type: enum, applies_to: [pluggable, link],
+      enum: ["802.3af", "802.3at", "802.3bt", passive] }
+  - { id: poe_watts, label: PoE watts, type: number, unit: W, applies_to: [pluggable, link] }
+  - { id: poe_mode, label: PoE mode, type: enum, enum: [a, b, passive], applies_to: [pluggable] }
+
+  # ------------------------------------------------------------------- video
+  - { id: hdmi_version, label: HDMI version, type: string, applies_to: [pluggable] }
+  - { id: dp_version, label: DisplayPort version, type: string, applies_to: [pluggable] }
+  - { id: resolution, label: Resolution, type: string, applies_to: [node, pluggable] }
+  - { id: refresh_hz, label: Refresh rate, type: number, unit: Hz, applies_to: [node, pluggable] }
+  - { id: hdcp, label: HDCP version, type: string, applies_to: [pluggable] }
+
+  # ----------------------------------------------------------------- storage
+  - { id: capacity, label: Capacity, type: number, unit: GB, applies_to: [node] }
+  - { id: rpm, label: Spindle speed, type: integer, unit: rpm, applies_to: [node],
+      description: Omit for solid state }
+  - { id: wwn, label: WWN, type: string, applies_to: [node] }
+
+  # ---------------------------------------------------------------- physical
+  - { id: plug, label: Source-side connector, type: enum, control: combo, open: true,
+      enum: [c13, c14, c19, c20, type-a, type-b, type-c, type-f, type-g, type-i, iec],
+      applies_to: [pluggable] }
+  - { id: tip, label: Device-side connector, type: enum, control: combo, open: true,
+      enum: ["barrel 5.5x2.1", "barrel 5.5x2.5", "barrel 4.0x1.7", usb-c, micro-usb, molex, sata],
+      applies_to: [pluggable] }
+  - { id: polarity, label: Polarity, type: string, applies_to: [pluggable] }
+  - { id: form_factor, label: Form factor, type: string, applies_to: [node] }
+  - { id: u_height, label: Rack height, type: number, unit: U, applies_to: [node] }
+  - { id: rack_u, label: Rack position, type: integer, unit: U, applies_to: [node],
+      description: Lowest U this occupies }
+  - { id: length, label: Cable length, type: number, unit: m, applies_to: [link] }
+  - { id: colour, label: Cable colour, type: string, applies_to: [link] }
+  - { id: weight, label: Weight, type: number, unit: kg, applies_to: [node] }
+  - id: dimensions
+    label: Dimensions
+    type: composite
+    applies_to: [node]
+    description: Stored as a nested object, one key per part
+    parts:
+      - { id: w, label: Width, type: number, unit: mm }
+      - { id: d, label: Depth, type: number, unit: mm }
+      - { id: h, label: Height, type: number, unit: mm }
+  - { id: noise_db, label: Noise, type: number, unit: dB, applies_to: [node] }
+  - { id: btu, label: Heat output, type: number, unit: BTU/h, applies_to: [node] }
+
+  # -------------------------------------------------------------- management
+  - { id: management_url, label: Management URL, type: string, applies_to: [node] }
+  - { id: console, label: Serial console, type: string, control: textarea, applies_to: [node],
+      description: How you reach it out of band }
+  - { id: credentials_ref, label: Credentials reference, type: string, applies_to: [node],
+      description: A POINTER to where the secret lives, such as a Vault path. Never the secret }
+
+  # -------------------------------------------------------------- provenance
+  - { id: purchased, label: Purchased, type: string, applies_to: [node] }
+  - { id: warranty_until, label: Warranty until, type: string, applies_to: [node] }
+  - { id: eol_date, label: Vendor end of life, type: string, applies_to: [node] }
+  - { id: price, label: Price, type: number, unit: USD, applies_to: [node],
+      description: Change the unit here if you track a different currency }
+  - { id: label_printed, label: Physically labelled, type: boolean, applies_to: [node, pluggable],
+      description: Drives a labelling pass; false means go and stick a label on it }
+
+templates:
+  # -------------------------------------------------------------- virtual
+  # `virtual: true` keeps these out of the free-port report and the graph: a
+  # vNIC is not a socket you can plug a cable into. Set parent to the machine
+  # it runs on and the tree answers "what dies if this host dies".
+  - id: vm
+    group: virtual
+    label: VM or container
+    vars:
+      - { name: name, label: name, default: guest-1 }
+      - { name: host, label: runs on (node id), default: compute/pc-1 }
+      - { name: ip, label: ip, default: "" }
+    node:
+      id: compute/{{name}}
+      label: "{{name}}"
+      type: vm
+      virtual: true
+      hostname: "{{name}}"
+      parent: "{{host}}"
+      pluggables:
+        - { id: eth0, type: eth, ips: ["{{ip}}"] }
+
+  - id: router-vm
+    group: virtual
+    label: Router / firewall VM
+    vars:
+      - { name: name, label: name, default: pfsense }
+      - { name: host, label: runs on (node id), default: compute/pc-1 }
+    node:
+      id: compute/{{name}}
+      label: "{{name}}"
+      type: router
+      virtual: true
+      hostname: "{{name}}"
+      parent: "{{host}}"
+      note: map each vNIC to the physical port it is bridged to via meta.bridge
+      pluggables:
+        - { id: wan, type: eth, meta: { bridge: vmbr0 } }
+        - { id: lan, type: eth, meta: { bridge: vmbr1 } }
+
+  # ----------------------------------------------------------- management
+  # An IP-KVM sits between you and a machine's console: it captures the target's
+  # HDMI out and presents itself to the target as a USB keyboard and mouse. Both
+  # of those are real cables, which is why it belongs here rather than as a note.
+  - id: ip-kvm
+    group: management
+    label: IP-KVM (NanoKVM / JetKVM)
+    vars:
+      - { name: n, label: number, default: "1" }
+      - { name: model, label: model, default: NanoKVM }
+    node:
+      id: misc/kvm-{{n}}
+      label: "{{model}}"
+      type: ip-kvm
+      note: set meta.console on the target node to point back at this
+      meta:
+        model: "{{model}}"
+      pluggables:
+        - { id: hdmi, type: hdmi, dir: in, note: from the target's HDMI output }
+        - { id: usb, type: usb, dir: in, note: to a USB port on the target; emulates keyboard and mouse }
+        - { id: eth0, type: eth, note: TODO some variants are PoE powered, others need the separate psu }
+        - { id: psu, type: usb, dir: in, note: delete if powered over PoE or from the target }
+
+  # -------------------------------------------------------------- network
+  - id: firewall-appliance
+    group: network
+    label: Router / firewall appliance (4 NIC)
+    vars:
+      - { name: n, label: number, default: "1" }
+      - { name: model, label: model, default: TODO }
+    node:
+      id: net/fw-{{n}}
+      label: "{{model}}"
+      type: router
+      meta:
+        model: "{{model}}"
+      pluggables:
+        - { id: eth0, type: eth, label: WAN }
+        - { id: eth1, type: eth }
+        - { id: eth2, type: eth }
+        - { id: eth3, type: eth }
+        - { id: psu, type: power, dir: in }
+
+  - id: switch-managed-8
+    group: network
+    label: Managed switch (8 port)
+    vars:
+      - { name: n, label: number, default: "1" }
+      - { name: model, label: model, default: TODO }
+    node:
+      id: net/sw-{{n}}
+      label: "{{model}}"
+      type: switch
+      meta:
+        model: "{{model}}"
+      pluggables:
+        - { id: p1, type: eth }
+        - { id: p2, type: eth }
+        - { id: p3, type: eth }
+        - { id: p4, type: eth }
+        - { id: p5, type: eth }
+        - { id: p6, type: eth }
+        - { id: p7, type: eth }
+        - { id: p8, type: eth }
+        - { id: psu, type: power, dir: in }
+
+  - id: usb-nic
+    group: network
+    label: USB ethernet adapter
+    vars:
+      - { name: n, label: number, default: "1" }
+      - { name: host, label: plugs into (node id), default: compute/pc-1 }
+      - { name: speed, label: speed in gbps, default: "1" }
+    node:
+      id: net/usb-nic-{{n}}
+      label: USB ethernet adapter
+      type: nic
+      parent: "{{host}}"
+      note: a node rather than a property, because it can fail or be moved and the host silently loses an interface
+      pluggables:
+        - { id: usb, type: usb, dir: in }
+        - { id: eth0, type: eth, meta: { speed: "{{speed}}" } }
+
+  - id: isp-gateway
+    group: network
+    label: ISP modem / ONT
+    vars:
+      - { name: model, label: model, default: TODO }
+    node:
+      id: net/isp-gw
+      label: "{{model}}"
+      type: modem
+      note: the demarcation point; upstream of this is not yours
+      pluggables:
+        - { id: wan, type: coax, note: TODO coax, fibre or rj45 from the street }
+        - { id: lan, type: eth }
+        - { id: psu, type: power, dir: in }
+
+  - id: patch-panel-12
+    group: network
+    label: Patch panel (12 port)
+    vars:
+      - { name: n, label: number, default: "1" }
+    node:
+      id: net/patch-{{n}}
+      label: Patch panel
+      type: patch-panel
+      note: front and rear are separate ports; a cable lands on one side and continues from the other
+      pluggables:
+        - { id: front1, type: eth }
+        - { id: rear1, type: eth }
+        - { id: front2, type: eth }
+        - { id: rear2, type: eth }
+
+  # -------------------------------------------------------------- machines
+  - id: desktop
+    group: compute
+    label: Desktop
+    vars:
+      - { name: name, label: id slug, default: desktop-1 }
+      - { name: model, label: model, default: TODO }
+    node:
+      id: compute/{{name}}
+      label: "{{model}}"
+      type: workstation
+      hostname: "{{name}}"
+      meta:
+        model: "{{model}}"
+      pluggables:
+        - { id: eth0, type: eth }
+        - { id: psu, type: power, dir: in }
+
+  - id: laptop
+    group: compute
+    label: Laptop
+    vars:
+      - { name: name, label: id slug, default: laptop-1 }
+      - { name: model, label: model, default: TODO }
+    node:
+      id: compute/{{name}}
+      label: "{{model}}"
+      type: laptop
+      hostname: "{{name}}"
+      note: usually wireless; add an eth port only if it is actually cabled
+      meta:
+        model: "{{model}}"
+      pluggables:
+        - { id: psu, type: power, dir: in }
+
+  - id: disk
+    group: compute
+    label: Drive
+    vars:
+      - { name: name, label: id slug, default: disk-1 }
+      - { name: host, label: lives in (node id), default: compute/pc-1 }
+      - { name: capacity, label: capacity in GB, default: "1000" }
+    node:
+      id: compute/{{name}}
+      label: Drive
+      type: disk
+      parent: "{{host}}"
+      note: both inside the host (parent) and cabled to it (sata); those are different relations
+      meta:
+        capacity: "{{capacity}}"
+      pluggables:
+        - { id: sata, type: sata, dir: in }
+
+  # ------------------------------------------------------------------ places
+  - id: location
+    group: place
+    label: Location
+    vars:
+      - { name: slug, label: id slug, default: room }
+      - { name: name, label: display name, default: Room }
+    node:
+      id: loc/{{slug}}
+      label: "{{name}}"
+      type: location
+
+  # ----------------------------------------------------------------- compute
+  - id: minipc-4nic
+    group: compute
+    label: Mini PC, 4 NICs
+    vars:
+      - { name: n, label: number, default: "1" }
+      - { name: model, label: model, default: TODO }
+    node:
+      id: compute/pc-{{n}}
+      label: Mini PC, 4x NIC
+      type: server
+      meta:
+        model: "{{model}}"
+        ansible_host: TODO
+      pluggables:
+        - { id: eth0, type: eth }
+        - { id: eth1, type: eth }
+        - { id: eth2, type: eth }
+        - { id: eth3, type: eth }
+        - { id: psu, type: power, dir: in }
+
+  - id: minipc-1nic
+    group: compute
+    label: Mini PC, 1 NIC
+    vars:
+      - { name: n, label: number, default: "1" }
+      - { name: model, label: model, default: TODO }
+    node:
+      id: compute/pc-{{n}}
+      label: Mini PC
+      type: server
+      meta:
+        model: "{{model}}"
+        ansible_host: TODO
+      pluggables:
+        - { id: eth0, type: eth }
+        - { id: psu, type: power, dir: in }
+
+  - id: sbc
+    group: compute
+    label: SBC (Pi / Orange Pi)
+    vars:
+      - { name: slug, label: id slug, default: opi }
+      - { name: n, label: number, default: "1" }
+      - { name: model, label: board, default: TODO }
+    node:
+      id: compute/{{slug}}-{{n}}
+      label: "{{model}}"
+      type: server
+      meta:
+        model: "{{model}}"
+        ansible_host: TODO
+      pluggables:
+        - { id: eth0, type: eth }
+        - { id: pwr, type: usb, dir: in }
+
+  # ----------------------------------------------------------------- network
+  - id: unifi-flex-mini
+    group: network
+    label: UniFi Flex Mini (5 port)
+    vars:
+      - { name: n, label: number, default: "1" }
+    node:
+      id: net/sw-flex-{{n}}
+      label: UniFi Flex Mini
+      type: switch
+      meta:
+        vendor: Ubiquiti
+        model: USW-Flex-Mini
+      pluggables:
+        - { id: p1, type: eth, note: PoE-in capable, meta: { speed: 1 } }
+        - { id: p2, type: eth, meta: { speed: 1 } }
+        - { id: p3, type: eth, meta: { speed: 1 } }
+        - { id: p4, type: eth, meta: { speed: 1 } }
+        - { id: p5, type: eth, meta: { speed: 1 } }
+        - { id: dc, type: power, dir: in, note: unused if powered over p1, meta: { volts: 5 } }
+
+  - id: switch-unmanaged-5
+    group: network
+    label: Unmanaged switch (5 port)
+    vars:
+      - { name: n, label: number, default: "1" }
+      - { name: model, label: model, default: TODO }
+    node:
+      id: net/sw-dumb-{{n}}
+      label: Unmanaged switch
+      type: switch
+      meta:
+        model: "{{model}}"
+      pluggables:
+        - { id: p1, type: eth, meta: { speed: 1 } }
+        - { id: p2, type: eth, meta: { speed: 1 } }
+        - { id: p3, type: eth, meta: { speed: 1 } }
+        - { id: p4, type: eth, meta: { speed: 1 } }
+        - { id: p5, type: eth, meta: { speed: 1 } }
+        - { id: dc, type: power, dir: in }
+
+  - id: unifi-ap
+    group: network
+    label: UniFi AP (PoE powered)
+    vars:
+      - { name: n, label: number, default: "1" }
+      - { name: model, label: model, default: UAP-AC-Lite }
+    node:
+      id: net/ap-{{n}}
+      label: "{{model}}"
+      type: ap
+      note: PoE powered, no barrel input
+      meta:
+        vendor: Ubiquiti
+        model: "{{model}}"
+      pluggables:
+        - { id: eth0, type: eth, label: MAIN, meta: { speed: 1, poe_standard: "802.3af" } }
+
+  - id: poe-injector
+    group: network
+    label: PoE injector
+    vars:
+      - { name: n, label: number, default: "1" }
+      - { name: volts, label: volts, default: "48" }
+    node:
+      id: net/poe-{{n}}
+      label: PoE injector
+      type: injector
+      meta:
+        volts: "{{volts}}"
+      pluggables:
+        - { id: lan, type: eth, label: LAN, note: to the switch }
+        - { id: poe, type: eth, label: POE, note: to the device, carries power }
+        - { id: psu, type: power, dir: in }
+
+  # ------------------------------------------------------------------- power
+  - id: ups-4
+    group: power
+    label: UPS (4x C13 out)
+    vars:
+      - { name: n, label: number, default: "1" }
+      - { name: model, label: model, default: TODO }
+    node:
+      id: power/ups-{{n}}
+      label: UPS
+      type: ups
+      meta:
+        model: "{{model}}"
+      pluggables:
+        - { id: inlet, type: power, dir: in, meta: { plug: c14 } }
+        - { id: out1, type: power, dir: out, meta: { plug: c13 } }
+        - { id: out2, type: power, dir: out, meta: { plug: c13 } }
+        - { id: out3, type: power, dir: out, meta: { plug: c13 } }
+        - { id: out4, type: power, dir: out, meta: { plug: c13 } }
+
+  - id: pdu-6
+    group: power
+    label: PDU (6 outlet)
+    vars:
+      - { name: n, label: number, default: "1" }
+      - { name: model, label: model, default: TODO }
+    node:
+      id: power/pdu-{{n}}
+      label: PDU
+      type: pdu
+      meta:
+        model: "{{model}}"
+      pluggables:
+        - { id: inlet, type: power, dir: in }
+        - { id: out1, type: power, dir: out }
+        - { id: out2, type: power, dir: out }
+        - { id: out3, type: power, dir: out }
+        - { id: out4, type: power, dir: out }
+        - { id: out5, type: power, dir: out }
+        - { id: out6, type: power, dir: out }
+
+  - id: strip-4
+    group: power
+    label: Power strip (4 outlet)
+    vars:
+      - { name: n, label: number, default: "1" }
+    node:
+      id: power/strip-{{n}}
+      label: Power strip
+      type: strip
+      pluggables:
+        - { id: inlet, type: power, dir: in }
+        - { id: out1, type: power, dir: out }
+        - { id: out2, type: power, dir: out }
+        - { id: out3, type: power, dir: out }
+        - { id: out4, type: power, dir: out }
+
+  - id: psu-barrel
+    group: power
+    label: PSU brick, barrel out
+    vars:
+      - { name: forr, label: powers which node, default: device }
+      - { name: volts, label: volts, default: "12" }
+      - { name: amps, label: amps, default: "3" }
+      - { name: tip, label: tip, default: barrel }
+    node:
+      id: power/psu-{{forr}}
+      label: PSU {{volts}}V {{amps}}A
+      type: adapter
+      pluggables:
+        - { id: in, type: power, dir: in }
+        - { id: out, type: power, dir: out,
+            meta: { tip: "{{tip}}", volts_out: "{{volts}}", amps_out: "{{amps}}" } }
+
+  - id: psu-usb
+    group: power
+    label: PSU brick, USB out
+    vars:
+      - { name: forr, label: powers which node, default: device }
+      - { name: volts, label: volts, default: "5" }
+      - { name: amps, label: amps, default: "3" }
+      - { name: tip, label: tip, default: usb-c }
+    node:
+      id: power/psu-{{forr}}
+      label: PSU {{volts}}V {{amps}}A
+      type: adapter
+      pluggables:
+        - { id: in, type: power, dir: in }
+        - { id: out, type: usb, dir: out,
+            meta: { tip: "{{tip}}", volts_out: "{{volts}}", amps_out: "{{amps}}" } }
+
+  - id: splitter
+    group: power
+    label: Power splitter (1 in, 3 out)
+    vars:
+      - { name: n, label: number, default: "1" }
+    node:
+      id: power/split-{{n}}
+      label: Power splitter
+      type: splitter
+      note: a splitter is a node so the fan-out is visible; the alternative is fanout on the outlet
+      pluggables:
+        - { id: in, type: power, dir: in }
+        - { id: out1, type: power, dir: out }
+        - { id: out2, type: power, dir: out }
+        - { id: out3, type: power, dir: out }
+
+  # ---------------------------------------------------------------------- av
+  - id: hdmi-switch-3
+    group: av
+    label: HDMI switch (3 in)
+    vars:
+      - { name: n, label: number, default: "1" }
+    node:
+      id: misc/hdmi-sw-{{n}}
+      label: HDMI switch
+      type: av-switch
+      pluggables:
+        - { id: in1, type: hdmi, dir: in }
+        - { id: in2, type: hdmi, dir: in }
+        - { id: in3, type: hdmi, dir: in }
+        - { id: out, type: hdmi, dir: out }
+        - { id: pwr, type: usb, dir: in, note: often bus powered, delete if so }
+
+  - id: monitor
+    group: av
+    label: Monitor
+    vars:
+      - { name: n, label: number, default: "1" }
+      - { name: model, label: model, default: TODO }
+    node:
+      id: misc/monitor-{{n}}
+      label: "{{model}}"
+      type: display
+      meta:
+        model: "{{model}}"
+      pluggables:
+        - { id: hdmi1, type: hdmi, dir: in }
+        - { id: dp1, type: dp, dir: in }
+        - { id: psu, type: power, dir: in }
+</script>
+<script src="js/core.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: gofmt
+        run: |
+          out=$(gofmt -l cmd/)
+          if [ -n "$out" ]; then echo "not gofmt'd:"; echo "$out"; exit 1; fi
+
+      - run: go vet ./cmd/inv
+      - run: go build ./...
+
+      # The suite extracts the CORE block out of index.html and runs it under
+      # node, so the browser logic is covered without a browser.
+      - name: unit tests
+        run: node test/core.test.mjs
+
+      # Actually executes the UI against a stubbed DOM. The compile-only check
+      # this replaced could not see a ReferenceError, and one was live.
+      - name: ui smoke tests
+        run: node test/ui.test.mjs
+
+      # The one that matters: the Go emitter and the browser emitter must produce
+      # byte-identical YAML, or saving from the editor reformats the whole file
+      # and every diff becomes noise. This shells out to `inv fmt` for real.
+      - name: emitter parity sweep
+        run: node test/sweep.mjs
+
+      # The inventory in the repo must already be canonical, so a hand-edit that
+      # skipped `inv fmt` cannot land.
+      # inventory.yaml is gitignored on purpose: it is the user's data and this
+      # repo is public. The shipped example is what gets checked.
+      - name: example inventory is canonical and valid
+        run: |
+          go run ./cmd/inv fmt inventory.example.yaml | diff -u - inventory.example.yaml
+          go run ./cmd/inv validate inventory.example.yaml
+          go run ./cmd/inv free inventory.example.yaml

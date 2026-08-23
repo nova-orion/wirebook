@@ -1,0 +1,103 @@
+# Example k3s deployment. Copy into your GitOps repo rather than applying from
+# here, so Flux owns it.
+#
+# READ THIS FIRST, it decides whether the app is usable:
+#
+#   The File System Access API only exists in a SECURE CONTEXT. Served over
+#   plain http on a LAN address, `showOpenFilePicker` is undefined, so the
+#   editor cannot open or save your inventory file in place. It degrades to
+#   "download to your downloads folder and move it yourself", which is the
+#   friction you were trying to avoid.
+#
+#   todo infra: terminate TLS for this hostname before relying on it.
+#
+#   So: terminate TLS. The Ingress below assumes cert-manager and a real
+#   hostname. `http://localhost:PORT` via `kubectl port-forward` is also a
+#   secure context, which makes it a good way to try this before setting up DNS.
+#
+# Entirely stateless. The app never uploads your inventory: the file stays on the
+# machine running the browser. There is no database, no volume, and nothing here
+# to back up.
+#
+# Settings are browser-local, seeded from the copy built into the image. There is
+# deliberately no server-side settings store: the browser cannot write back to
+# one, so it could only ever do what the built-in copy already does.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wirebook
+  labels:
+    app: wirebook
+spec:
+  revisionHistoryLimit: 1
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wirebook
+  template:
+    metadata:
+      labels:
+        app: wirebook
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101 # the nginx user in nginx-unprivileged
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: web
+          # todo version https://github.com/nova-orion/wirebook/pkgs/container/wirebook
+          image: ghcr.io/nova-orion/wirebook:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          # It serves static files and holds no state, so it needs very little.
+          resources:
+            requests: { cpu: 5m, memory: 16Mi }
+            limits: { memory: 64Mi }
+          readinessProbe:
+            httpGet: { path: /index.html, port: http }
+          livenessProbe:
+            httpGet: { path: /index.html, port: http }
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wirebook
+  labels:
+    app: wirebook
+spec:
+  type: ClusterIP
+  selector:
+    app: wirebook
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+# Delete this and use `kubectl port-forward svc/wirebook 8080:80` if you would
+# rather not expose it. localhost counts as a secure context, so the editor works
+# fully that way.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wirebook
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt # rename to match your issuer
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [wirebook.example.internal] # your hostname
+      secretName: wirebook-tls
+  rules:
+    - host: wirebook.example.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: wirebook
+                port: { name: http }

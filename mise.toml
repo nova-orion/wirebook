@@ -1,0 +1,28 @@
+[tools]
+go = "latest"
+
+[tasks.check]
+description = "Validate the inventory graph"
+run = "go run ./cmd/inv validate"
+
+[tasks.free]
+description = "List unplugged ports, and blocked ones with reasons"
+run = "go run ./cmd/inv free"
+
+[tasks.fmt]
+description = "Rewrite inventory.yaml in canonical form"
+run = "go run ./cmd/inv fmt -w"
+
+[tasks.test]
+description = "Full suite: Go vet/build, JS tests, exhaustive emitter sweep"
+run = [
+  "go vet ./cmd/inv",
+  "go build -o /dev/null ./cmd/inv",
+  "node test/core.test.mjs",
+  "node test/ui.test.mjs",
+  "node test/sweep.mjs",
+]
+
+[tasks.sweep]
+description = "Exhaustive scalar-quoting parity check against `inv fmt`"
+run = "node test/sweep.mjs"

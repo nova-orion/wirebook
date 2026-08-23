@@ -1,0 +1,16 @@
+# your data never goes in the image
+inventory.yaml
+*.local.yaml
+
+.git
+.github
+cmd
+test
+go.mod
+go.sum
+AGENTS.md
+CLAUDE.md
+README.md
+mise.toml
+Dockerfile
+.dockerignore

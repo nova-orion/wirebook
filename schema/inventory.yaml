@@ -1,0 +1,444 @@
+# JSON Schema (draft 2020-12) written in YAML.
+#
+# Every *.yaml in this directory except this file validates against this schema.
+# Each data file may contain `nodes`, `links`, or both; the loader globs the
+# directory and merges them, so how you split them up is purely for your
+# convenience and can change at any time without touching the tooling.
+#
+# Editors pick this up via the modeline at the top of each data file:
+#   # yaml-language-server: $schema=./schema.yaml
+$schema: "https://json-schema.org/draft/2020-12/schema"
+title: Homelab inventory
+description: |
+  Physical inventory as a graph.
+
+  `nodes` are things: locations, devices, adapters, drives, anything with a
+  physical presence. `links` are connections between the pluggables on those
+  nodes.
+
+  A ref is `<node-id>:<pluggable-id>`, e.g. `compute/pc-router-1:eth0`.
+
+  This file deliberately does NOT model config, IPs, roles, or VMs. Those live
+  in Ansible. This answers one question: what is plugged into what, via which
+  port.
+type: object
+additionalProperties: false
+
+properties:
+  defaults:
+    $ref: "#/$defs/defaults"
+  fields:
+    type: array
+    description: |
+      Custom field declarations that travel WITH the data.
+
+      A spec's `id` is the meta key it describes, so declaring one adds meaning
+      to values that already exist and needs no migration. Only the fields that
+      the shipped settings do not already provide need to be here; the editor
+      embeds those automatically when you use them.
+
+      They live here rather than only in settings.yaml so that backing up this
+      one file is enough. A definition held only in browser storage would be
+      lost the first time site data was cleared, and the values it described
+      would become uninterpretable.
+    items:
+      $ref: "#/$defs/field"
+  vlans:
+    type: array
+    description: |
+      VLANs are defined once here and referenced from ports. They deliberately
+      do NOT create extra links: one cable stays one cable, and the logical
+      connections riding it are derived from the membership on both ends.
+    items:
+      $ref: "#/$defs/vlan"
+  nodes:
+    type: array
+    items:
+      $ref: "#/$defs/node"
+  links:
+    type: array
+    items:
+      $ref: "#/$defs/link"
+
+$defs:
+  defaults:
+    type: object
+    additionalProperties: false
+    description: |
+      Per-file defaults, so the common case is not repeated on every entry.
+    properties:
+      namespace:
+        type: string
+        pattern: "^[a-z0-9][a-z0-9-]*$"
+        description: |
+          Prefix applied to bare ids and bare refs in this file. One rule covers
+          everything: anything containing a `/` is absolute and left alone,
+          anything without is resolved in this namespace. So in a file with
+          `namespace: compute`, `id: pc-router-1` becomes `compute/pc-router-1`,
+          while `parent: loc/office` stays exactly as written.
+      parent:
+        type: string
+        description: |
+          Applied to any node in this file that does not declare its own
+          `parent`. Resolved by the same rule as above.
+
+  field:
+    type: object
+    additionalProperties: false
+    required: [id]
+    properties:
+      id:
+        type: string
+        pattern: "^[a-z][a-z0-9_]*$"
+        description: The meta key this describes. Renaming it orphans every value stored under the old key.
+      label: {type: string}
+      type:
+        enum: [string, number, integer, boolean, enum, composite]
+        default: string
+      control:
+        enum: [text, textarea, number, checkbox, select, combo, composite]
+        description: Widget override. Defaults sensibly from `type`.
+      unit:
+        type: string
+        description: |
+          Shown beside the input and in reports, e.g. `gbps`, `V`, `W`, `GB`.
+          Belongs here and never in the value, so numbers stay comparable.
+      enum:
+        type: array
+        items: {type: ["string", "number", "boolean"]}
+      open:
+        type: boolean
+        description: For a select or combo, allow values outside `enum`.
+      min: {type: number}
+      max: {type: number}
+      applies_to:
+        type: array
+        items: {enum: [node, pluggable, link, vlan]}
+      parts:
+        type: array
+        description: For `composite`. Each part is a key in a nested object.
+        items:
+          type: object
+          additionalProperties: false
+          required: [id]
+          properties:
+            id: {type: string, pattern: "^[a-z][a-z0-9_]*$"}
+            label: {type: string}
+            type: {enum: [string, number, integer, boolean]}
+            unit: {type: string}
+      description: {type: string}
+      meta: {$ref: "#/$defs/meta"}
+
+  vlan:
+    type: object
+    additionalProperties: false
+    required: [id]
+    properties:
+      id: {type: integer, minimum: 0, maximum: 4094}
+      name: {type: string, description: "Short name, e.g. mgmt or iot"}
+      subnet: {type: string, description: "e.g. 10.0.20.0/24"}
+      note: {type: string}
+      meta: {$ref: "#/$defs/meta"}
+
+  nodeId:
+    type: string
+    pattern: "^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)*$"
+    description: |
+      Slash-namespaced id, e.g. `power/ups-1`. Guessable while standing in
+      front of the hardware. Never encode an IP, a position, or anything else
+      that changes. Never rename one: links point at it. Rename `label` instead.
+
+  plugId:
+    type: string
+    pattern: "^[a-z0-9][a-z0-9._-]*$"
+    description: Port id, local to its node. Match the silkscreen where there is one.
+
+  ref:
+    type: string
+    pattern: "^[a-z0-9][a-z0-9-]*(/[a-z0-9][a-z0-9-]*)*:[a-z0-9][a-z0-9._-]*$"
+    description: "`<node-id>:<pluggable-id>`, e.g. `net/sw-flex-1:p1`"
+
+  meta:
+    type: object
+    description: |
+      Freeform bag. Extra keys are always allowed and never validated. The
+      properties listed below are documented only so your editor autocompletes
+      the ones you actually use. Add to this list as your conventions settle.
+    additionalProperties: true
+    properties:
+      # ---- identity
+      vendor: {type: string}
+      model: {type: string}
+      serial: {type: string}
+      asset_tag: {type: string}
+      ansible_host:
+        type: string
+        description: Bridge to the Ansible inventory, where the config lives.
+      k8s_node: {type: string, description: "Name in kubectl get nodes, often not the hostname"}
+
+      # ---- machine specs, node level
+      cpu: {type: string, description: "e.g. Intel N100"}
+      cores: {type: ["number", "string"]}
+      threads: {type: ["number", "string"]}
+      ram: {type: string, description: "e.g. 32GB DDR4"}
+      ram_slots: {type: ["number", "string"]}
+      gpu: {type: string}
+      storage: {type: string, description: "Headline only. Model a drive as a child node when the slot matters."}
+      motherboard: {type: string}
+      bios_version: {type: string}
+      firmware: {type: string}
+      os: {type: string}
+
+      # ---- link speed, port level
+      speed: {type: string, description: "e.g. 1g, 2.5g, 10g"}
+      duplex: {enum: [full, half]}
+      pcie_gen: {type: ["number", "string"]}
+      pcie_lanes: {type: ["number", "string"]}
+      sata_gen: {type: ["number", "string"], description: "3 means SATA III"}
+      nvme_gen: {type: ["number", "string"]}
+      usb_gen: {type: string, description: "e.g. 2.0, 3.2 gen2, 4"}
+      iface: {type: string, description: "What the OS calls this physical port, e.g. enp1s0"}
+      wifi: {type: boolean, description: "No ethernet port; a wireless association is not a cable"}
+      ssid: {type: string, description: "Wireless network a VLAN is exposed as"}
+      network_profile: {type: string, description: "Pointer into the Ansible inventory; the profile itself lives there"}
+      bridge: {type: string, description: "The Proxmox bridge or bond this port is enslaved to"}
+
+      # ---- power. in and out kept apart, since an adapter has both
+      volts: {type: ["number", "string"], description: "Use when there is only one side"}
+      amps: {type: ["number", "string"]}
+      watts: {type: ["number", "string"]}
+      volts_in: {type: ["number", "string"]}
+      amps_in: {type: ["number", "string"]}
+      volts_out: {type: ["number", "string"]}
+      amps_out: {type: ["number", "string"]}
+      watts_max: {type: ["number", "string"], description: "Rated ceiling, not measured draw"}
+      watts_idle: {type: ["number", "string"]}
+
+      # ---- PoE
+      poe_standard: {type: string, description: "802.3af, 802.3at, 802.3bt, or passive"}
+      poe_watts: {type: ["number", "string"]}
+      poe_mode: {enum: [a, b, passive]}
+
+      # ---- video
+      hdmi_version: {type: ["number", "string"], description: "e.g. 1.4, 2.0, 2.1"}
+      dp_version: {type: ["number", "string"], description: "e.g. 1.2, 1.4, 2.0"}
+      resolution: {type: string, description: "e.g. 2560x1440"}
+      refresh_hz: {type: ["number", "string"]}
+      hdcp: {type: ["number", "string"]}
+
+      # ---- storage
+      capacity: {type: string, description: "e.g. 2TB"}
+      rpm: {type: ["number", "string"], description: "Omit for solid state"}
+
+      # ---- physical
+      plug:
+        type: string
+        description: Source-side connector, e.g. `c14`, `type-b`, `iec`
+      tip:
+        type: string
+        description: Device-side connector, e.g. `barrel 5.5x2.1`, `usb-c`
+      polarity: {type: string}
+      form_factor: {type: string}
+      u_height: {type: ["number", "string"]}
+      length: {type: string, description: "Cable length. Links only."}
+      colour: {type: string, description: "Cable colour. Links only."}
+
+      # ---- declared in settings.yaml
+      btu: {type: ["number", "string"], description: "in BTU/h"}
+      console: {type: string, description: "How you reach it out of band"}
+      credentials_ref: {type: string, description: "A POINTER to where the secret lives"}
+      dimensions: {type: object, description: "Stored as a nested object, one key per part"}
+      eol_date: {type: string}
+      label_printed: {type: boolean, description: "Drives a labelling pass; false means go and stick a label on it"}
+      lag: {type: string, description: "Name shared by the ports bonded together"}
+      management_url: {type: string}
+      mtu: {type: integer, description: "in bytes"}
+      noise_db: {type: ["number", "string"], description: "in dB"}
+      poe_budget: {type: ["number", "string"], description: "in W; Total PoE a switch can supply across all ports"}
+      rack_u: {type: integer, description: "in U; Lowest U this occupies"}
+      watts_measured: {type: ["number", "string"], description: "in W; What you actually saw on a meter"}
+      weight: {type: ["number", "string"], description: "in kg"}
+      wwn: {type: string}
+
+      # ---- provenance
+      purchased: {type: string}
+      warranty_until: {type: string}
+      price: {type: ["number", "string"]}
+
+  node:
+    type: object
+    additionalProperties: false
+    required: [id]
+    properties:
+      id:
+        $ref: "#/$defs/nodeId"
+      label:
+        type: string
+        description: Human name, or whatever is physically written on it.
+      virtual:
+        type: boolean
+        description: |
+          True for something with no physical presence: a VM, a container, a
+          logical interface. Set `parent` to the machine it runs on and the
+          containment tree reads room -> host -> guest, which answers "what dies
+          if this host dies".
+
+          A virtual node's pluggables are excluded from the free-port report and
+          from the graph, because they are not sockets you can plug a cable into.
+          Without that, every vNIC would show up forever as somewhere a cable
+          could go, and that report is the one worth trusting.
+      hostname:
+        type: string
+        description: |
+          Optional. The machine's own hostname, as the machine itself reports it.
+          One per device; addresses and MACs belong on the individual ports.
+
+          Names a machine has in other systems are separate and belong in `meta`,
+          because they legitimately differ: a Kubernetes node name goes in
+          `meta.k8s_node`, an Ansible inventory key in `meta.ansible_host`. Do not
+          normalise them into agreement, just record each one where it belongs.
+      type:
+        type: string
+        description: |
+          Free-form classification. Carries no semantics, it is only for
+          grouping and reports, so invent values freely.
+        examples:
+          - location
+          - server
+          - switch
+          - ap
+          - injector
+          - ups
+          - pdu
+          - strip
+          - adapter
+          - disk
+          - nic
+      parent:
+        $ref: "#/$defs/nodeId"
+        description: |
+          Containment, not connection. A device in a location, a drive in a
+          server, a card in a board. Cycles are an error.
+      note:
+        type: string
+        description: The why, or the caveat. Prose, any length.
+      meta:
+        $ref: "#/$defs/meta"
+      pluggables:
+        type: array
+        description: Ports where links terminate.
+        items:
+          $ref: "#/$defs/pluggable"
+
+  pluggable:
+    type: object
+    additionalProperties: false
+    required: [id, type]
+    properties:
+      id:
+        $ref: "#/$defs/plugId"
+      type:
+        description: |
+          Connector domain. This one IS semantic: a link is only legal between
+          two pluggables of the same type. Extend the list when you need to.
+        enum: [eth, power, usb, sata, pcie, m2, sfp, hdmi, dp, audio, coax, serial]
+      dir:
+        enum: [in, out]
+        description: |
+          Omit for symmetric types like `eth`. For directional types, `out` is
+          the providing side: a UPS outlet, a motherboard SATA port, an
+          adapter's output tip. Prevents "plug it into the UPS inlet" nonsense.
+      connected_with:
+        $ref: "#/$defs/ref"
+        description: |
+          Shorthand for a link from this pluggable to that one. Identical in
+          every way to declaring it in a links list; it is desugared on load.
+          Use this for ordinary cables, where having the answer next to the port
+          you are looking at beats having it in another file.
+
+          You may declare it from one end or from both. Both ends naming each
+          other collapses to a single link. A pluggable connected to two
+          different things is still an error, as it should be.
+
+          What this cannot express is `poe` and `blocks`, which are properties
+          of the connection rather than of either end. Use a links entry there.
+      fanout:
+        type: integer
+        minimum: 0
+        description: |
+          How many cables this port may carry. Default 1. Raise it for a socket
+          that legitimately feeds several devices through a splitter you do not
+          want to model as its own node. `free` reports remaining capacity.
+      mac:
+        type: string
+        description: "Belongs on the port rather than the node, because a 4-NIC box has 4 MACs."
+      ips:
+        type: array
+        items: {type: string}
+        description: |
+          Addresses bound to this interface. A list, because an interface can
+          hold more than one.
+      untagged:
+        type: integer
+        description: Native VLAN id on this port. Must exist in the top-level `vlans`.
+      tagged:
+        type: array
+        items: {type: integer}
+        description: |
+          Trunked VLAN ids. A tag present here but not on the far end of the
+          cable is reported, since that is the usual trunk misconfiguration.
+      reserved:
+        type: string
+        description: |
+          Why this port is being kept free. It stays connectable and still counts
+          as free, but every report says what it is earmarked for, so nobody
+          quietly uses the port you were saving.
+
+          Different from a blocked port: blocked means physically unusable, such
+          as a socket a brick overhangs. Reserved means usable but spoken for.
+      label:
+        type: string
+        description: What is silkscreened on the port, exactly as written.
+      note:
+        type: string
+      meta:
+        $ref: "#/$defs/meta"
+
+  link:
+    type: object
+    additionalProperties: false
+    required: [a, b]
+    properties:
+      a:
+        $ref: "#/$defs/ref"
+      b:
+        $ref: "#/$defs/ref"
+      label:
+        type: string
+        description: Cable tag. Put cable identity here, not on both ports.
+      note:
+        type: string
+      planned:
+        type: boolean
+        description: |
+          A cable you intend to run, not one that exists. It records the intent
+          without pretending the port is occupied: a planned cable does not
+          consume port capacity and does not make either end count as used, so
+          the free-port report stays honest.
+
+          Compatibility is still checked, which is the point of recording it
+          early: a plan that is physically impossible is worth knowing before you
+          buy the cable. Put the reason in `note`.
+      poe:
+        type: boolean
+        description: This eth link also carries power.
+      blocks:
+        type: array
+        description: |
+          Pluggables this connection makes physically unusable, typically a
+          brick overhanging the neighbouring outlet. Anything listed here is
+          reported as blocked rather than free, and using it is an error.
+        items:
+          $ref: "#/$defs/ref"
+      meta:
+        $ref: "#/$defs/meta"

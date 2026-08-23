@@ -1,0 +1,47 @@
+vlans:
+  - id: 10
+    name: mgmt
+    subnet: 10.0.10.0/24
+  - id: 20
+    name: iot
+    subnet: 10.0.20.0/24
+nodes:
+  - id: compute/a
+    pluggables:
+      - id: eth0
+        type: eth
+        connected_with: net/sw-1:p1
+        untagged: 10
+      - id: psu
+        type: power
+        dir: in
+        connected_with: power/out-1:o1
+  - id: compute/b
+    pluggables:
+      - id: psu
+        type: power
+        dir: in
+        connected_with: power/out-1:o1
+  - id: net/sw-1
+    hostname: sw1.lan
+    pluggables:
+      - id: p1
+        type: eth
+        mac: aa:bb:cc:00:00:01
+        ips:
+          - 10.0.10.2
+        untagged: 10
+        tagged:
+          - 20
+      - id: p2
+        type: eth
+        untagged: 10
+        tagged:
+          - 20
+          - 99
+  - id: power/out-1
+    pluggables:
+      - id: o1
+        type: power
+        dir: out
+        fanout: 3

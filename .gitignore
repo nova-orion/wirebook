@@ -1,0 +1,12 @@
+/inv
+/wirebook
+
+# Your inventory is YOUR data. This repo is public: committing it would publish
+# your hostnames, IPs, MACs, serials and management URLs. Keep it in a private
+# repo (or your GitOps repo) and copy inventory.example.yaml to start.
+/inventory.yaml
+*.local.yaml
+
+# Personal setup notes: repo description, topics, package visibility, where to
+# post it. Operational, not product docs, so it stays out of history.
+/.github/REPO-SETUP.md

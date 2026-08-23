@@ -1,0 +1,71 @@
+name: pages
+
+# Publishes the editor to GitHub Pages. Free on a public repo; on a private repo
+# Pages needs GitHub Pro or higher.
+#
+# Before enabling this, set Settings > Pages > Source to "GitHub Actions".
+#
+# Only the app is published. inventory.yaml is deliberately NOT copied into the
+# site: the editor reads your inventory from your own disk through the File
+# System Access API and never uploads it, so there is no reason for a copy to sit
+# on a public URL. If your inventory is committed to a public repo it is already
+# readable there, which is a separate decision worth making on purpose.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deploy finish rather than cancelling it mid-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache-dependency-path: go.sum
+
+      # Never publish a build that fails its own parity check.
+      - name: verify before publishing
+        run: |
+          node test/core.test.mjs
+          node test/sweep.mjs
+
+      - name: assemble site
+        run: |
+          mkdir -p site
+          cp index.html site/
+          cp -r schema site/
+          cp settings.yaml site/
+          cp README.md site/
+          ls -la site/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

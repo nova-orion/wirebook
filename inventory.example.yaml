@@ -1,0 +1,180 @@
+vlans:
+  - id: 10
+    name: mgmt
+    subnet: 10.0.10.0/24
+  - id: 20
+    name: iot
+    subnet: 10.0.20.0/24
+    note: no route to mgmt
+nodes:
+  - id: compute/disk-1
+    label: SSD
+    type: disk
+    parent: compute/srv-1
+    meta:
+      capacity: 2000
+      wwn: TODO
+    pluggables:
+      - id: sata
+        type: sata
+        dir: in
+        connected_with: compute/srv-1:sata0
+  - id: compute/srv-1
+    label: Mini PC
+    type: server
+    hostname: srv1.lan
+    parent: loc/rack
+    meta:
+      cpu: N100
+      dimensions:
+        d: 210
+        h: 45
+        w: 300
+      label_printed: true
+      model: X100
+      rack_u: 3
+      ram: 32
+      vendor: Acme
+      watts_max: 65
+    pluggables:
+      - id: eth0
+        type: eth
+        connected_with: net/sw-1:p1
+        mac: aa:bb:cc:00:00:01
+        ips:
+          - 10.0.10.5
+        untagged: 10
+        tagged:
+          - 20
+        meta:
+          duplex: full
+          speed: 2.5
+      - id: eth1
+        type: eth
+        meta:
+          speed: 2.5
+      - id: sata0
+        type: sata
+        dir: out
+      - id: psu
+        type: power
+        dir: in
+        connected_with: power/ups-1:out1
+  - id: loc/house
+    label: House
+    type: location
+  - id: loc/office
+    label: Office
+    type: location
+    parent: loc/house
+  - id: loc/rack
+    label: Half rack
+    type: location
+    parent: loc/office
+  - id: misc/monitor-1
+    label: Monitor
+    type: display
+    parent: loc/office
+    meta:
+      noise_db: 0
+      refresh_hz: 75
+      resolution: 2560x1440
+    pluggables:
+      - id: hdmi1
+        type: hdmi
+        dir: in
+      - id: psu
+        type: power
+        dir: in
+  - id: net/ap-1
+    label: AP
+    type: ap
+    parent: loc/office
+    pluggables:
+      - id: eth0
+        type: eth
+        label: MAIN
+  - id: net/sw-1
+    label: Switch
+    type: switch
+    parent: loc/rack
+    meta:
+      poe_budget: 60
+    pluggables:
+      - id: p1
+        type: eth
+        untagged: 10
+        tagged:
+          - 20
+        label: "1"
+        meta:
+          speed: 2.5
+      - id: p2
+        type: eth
+        meta:
+          poe_standard: 802.3af
+          speed: 1
+      - id: dc
+        type: power
+        dir: in
+        connected_with: power/ups-1:out1
+        meta:
+          plug: c13
+  - id: power/psu-ap-1
+    label: PoE injector PSU
+    type: adapter
+    parent: loc/office
+    meta:
+      amps_out: 0.5
+      price: 12
+      volts_out: 48
+    pluggables:
+      - id: in
+        type: power
+        dir: in
+      - id: out
+        type: power
+        dir: out
+        meta:
+          tip: barrel 5.5x2.1
+  - id: power/ups-1
+    label: UPS
+    type: ups
+    parent: loc/rack
+    meta:
+      watts_max: 900
+    pluggables:
+      - id: inlet
+        type: power
+        dir: in
+        meta:
+          plug: c14
+      - id: out1
+        type: power
+        dir: out
+        fanout: 2
+        meta:
+          plug: c13
+      - id: out2
+        type: power
+        dir: out
+        meta:
+          plug: c13
+      - id: out3
+        type: power
+        dir: out
+        meta:
+          plug: c13
+links:
+  - a: net/ap-1:eth0
+    b: net/sw-1:p2
+    label: blue, 5m
+    poe: true
+    meta:
+      colour: blue
+      length: 5
+  - a: power/psu-ap-1:in
+    b: power/ups-1:out2
+    note: brick overhangs, out3 is dead space
+    blocks:
+      - power/ups-1:out3

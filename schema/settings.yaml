@@ -1,0 +1,144 @@
+# JSON Schema (draft 2020-12) written in YAML, for settings.yaml.
+#
+# settings.yaml describes how to interpret and enter inventory data. It holds no
+# inventory data itself.
+$schema: "https://json-schema.org/draft/2020-12/schema"
+title: wirebook settings
+description: |
+  Custom field definitions and reusable node shapes.
+
+  A field spec's `id` IS the meta key it describes, so `meta: {speed: 2.5}` on a
+  port is the `speed` field. Declaring a field buys a typed input, a unit in the
+  UI, enum dropdowns and range checking. `meta` stays open regardless: an
+  undeclared key is still legal, the editor just marks it as undeclared.
+type: object
+additionalProperties: false
+
+properties:
+  fields:
+    type: array
+    items:
+      $ref: "#/$defs/field"
+  templates:
+    type: array
+    items:
+      $ref: "#/$defs/template"
+
+$defs:
+  field:
+    type: object
+    additionalProperties: false
+    required: [id]
+    properties:
+      id:
+        type: string
+        pattern: "^[a-z][a-z0-9_]*$"
+        description: |
+          The meta key this describes. Lowercase with underscores, matching the
+          keys already in use. Renaming one orphans every value stored under the
+          old key, so treat it like a node id.
+      label:
+        type: string
+        description: What the editor shows. Defaults to the id.
+      type:
+        enum: [string, number, integer, boolean, enum, composite]
+        default: string
+        description: |
+          The shape of the stored value. `number` and `integer` are validated and
+          stored as numbers, never strings, so they stay sortable. `composite`
+          stores a nested object, see `parts`.
+      control:
+        enum: [text, textarea, number, checkbox, select, combo, composite]
+        description: |
+          Which widget the editor shows. Defaults sensibly from `type`, so set it
+          only to override: `textarea` for a long string, or `combo` to get a
+          dropdown that still accepts anything you type.
+      open:
+        type: boolean
+        default: false
+        description: |
+          For a select or combo: allow values outside `enum`. Use it where the
+          common answers are known but the list is not closed, like connector
+          types. With `open: false` anything off-list is a validation error.
+      parts:
+        type: array
+        description: |
+          For `composite`. Each part becomes its own input and its own key inside
+          a nested object, so `dimensions` with parts w/d/h stores
+          `{d: 210, h: 45, w: 300}`.
+
+          Deliberately an object rather than a formatted string like `300x210x45`:
+          a format template would have to be parsed back, and every part keeps
+          its own type and unit this way. The emitter already handles nested maps
+          and sorts their keys, so this costs nothing.
+        items:
+          type: object
+          additionalProperties: false
+          required: [id]
+          properties:
+            id: {type: string, pattern: "^[a-z][a-z0-9_]*$"}
+            label: {type: string}
+            type: {enum: [string, number, integer, boolean]}
+            unit: {type: string}
+      unit:
+        type: string
+        description: |
+          Shown beside the input and in reports. Belongs here rather than in the
+          value: `speed: 2.5` with unit gbps is comparable, `speed: "2.5 gbps"`
+          is prose you have to parse back. Store values in this unit.
+          Examples: `gbps`, `V`, `A`, `W`, `Hz`, `GB`, `m`, `U`, `rpm`, `USD`.
+      enum:
+        type: array
+        items:
+          type: ["string", "number", "boolean"]
+        description: Allowed values. Only meaningful when type is `enum`.
+      min:
+        type: number
+        description: Inclusive lower bound for number and integer fields.
+      max:
+        type: number
+        description: Inclusive upper bound for number and integer fields.
+      applies_to:
+        type: array
+        description: |
+          Where this field is offered. Purely a UI hint: nothing stops you
+          putting any key on any object, since meta is open.
+        items:
+          enum: [node, pluggable, link, vlan]
+      description:
+        type: string
+
+  template:
+    type: object
+    additionalProperties: false
+    required: [id, node]
+    properties:
+      id:
+        type: string
+        description: Unique template id.
+      group:
+        type: string
+        description: Heading it appears under in the picker, e.g. `power`, `network`.
+      label:
+        type: string
+      vars:
+        type: array
+        description: |
+          Placeholders. Any `{{name}}` found anywhere in `node` gets a field,
+          declared or not, so a template can never emit an unfilled placeholder.
+        items:
+          type: object
+          additionalProperties: false
+          required: [name]
+          properties:
+            name:
+              type: string
+              pattern: "^[a-zA-Z_][a-zA-Z0-9_-]*$"
+            label: {type: string}
+            default: {type: ["string", "number", "boolean"]}
+      node:
+        type: object
+        description: |
+          A node, with {{placeholders}} allowed in any string, including inside
+          ids and meta values. Validated against the inventory schema once
+          substituted, not here.
