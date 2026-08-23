@@ -42,6 +42,10 @@ jobs:
           cache-dependency-path: go.sum
 
       # Never publish a build that fails its own parity check.
+      # The sweep shells out to `go run ./cmd/inv`, so the module has to be
+      # present before the tests run rather than as a side effect of an earlier step.
+      - run: go mod download
+
       - name: verify before publishing
         run: |
           node test/core.test.mjs

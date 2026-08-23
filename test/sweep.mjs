@@ -109,7 +109,10 @@ let goOut;
 try {
   goOut = execFileSync('go', ['run', './cmd/inv', 'fmt', jsFile], {
     cwd: root, encoding: 'utf8',
-    env: { ...process.env, GOFLAGS: '-mod=mod', GOPROXY: 'off' },
+    // Inherit the environment. Do NOT pin GOPROXY here: a sandbox that has to
+    // work from a warm local cache sets GOPROXY=off itself, and hardcoding it
+    // breaks any fresh checkout that legitimately needs to fetch the module.
+    env: process.env,
   });
 } catch (e) {
   console.error('go rejected the JS output entirely:\n' + String(e.stderr || e.message).split('\n').slice(0, 6).join('\n'));
@@ -178,7 +181,10 @@ let sOut;
 try {
   sOut = execFileSync('go', ['run', './cmd/inv', 'fmt', path.join(dir, 'struct.yaml')], {
     cwd: root, encoding: 'utf8',
-    env: { ...process.env, GOFLAGS: '-mod=mod', GOPROXY: 'off' },
+    // Inherit the environment. Do NOT pin GOPROXY here: a sandbox that has to
+    // work from a warm local cache sets GOPROXY=off itself, and hardcoding it
+    // breaks any fresh checkout that legitimately needs to fetch the module.
+    env: process.env,
   });
 } catch (e) {
   console.error('structural parity: go rejected the output\n' +
