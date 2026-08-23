@@ -119,18 +119,30 @@ inventory.yaml        your data
 ```
 
 Classic scripts, not ES modules, and the settings payload is inline rather than
-fetched. Both so that opening `index.html` straight out of a clone keeps working:
-`file://` blocks ES modules and `fetch` alike.
+fetched. Both so the page still *loads* from `file://`, which blocks ES modules
+and `fetch` alike. Reading and writing your file needs it served, see above.
 
 ## Quick start
 
-Open `index.html` in Chrome, Edge or Brave. Hit **Open** and pick your
-`inventory.yaml`, or start adding nodes and save a new one. Work is autosaved to
-the browser as you go; **Save** asks whether to overwrite the file you opened or
-write a new one.
+Try it at **<https://nova-orion.github.io/wirebook/>**, or serve it yourself:
 
-On Firefox the File System Access API is missing, so Save falls back to a
-download you move into place yourself.
+```sh
+git clone https://github.com/nova-orion/wirebook && cd wirebook
+python3 -m http.server 8099     # then open http://localhost:8099/
+```
+
+Hit **Open** and pick your `inventory.yaml`, or start adding nodes and save a new
+one. Work is autosaved to the browser as you go; **Save** asks whether to
+overwrite the file you opened or write a new one.
+
+**It has to be served, not opened as a file.** The page itself loads fine from
+`file://`, but Chromium does not grant the File System Access API to `file://`
+origins, so Open and Save would degrade to downloads. `http://localhost` counts
+as a secure context, which is why the one-liner above is the local recipe.
+
+Chromium only for the full experience: Chrome, Edge, Brave, Opera. Firefox and
+Safari implement no access to your own files, so there it is
+download-and-move-it-yourself.
 
 ## How the browser gets write access to a real file
 
@@ -166,9 +178,9 @@ way.
 
 But be clear-eyed about the difference between running it locally and loading it
 from a URL. **From a URL you are trusting whoever serves the JavaScript**, every
-time you load it, with read and write access to the file you pick. Loading it
-from your own clone over `file://`, or from an image you built yourself, removes
-that trust entirely. That is a real argument for the local path, and the reason
+time you load it, with read and write access to the file you pick. Serving it from
+your own clone, or from an image you built yourself, removes that trust
+entirely. That is a real argument for the local path, and the reason
 this is distributed as files you can read rather than only as a hosted app.
 
 ## The model
