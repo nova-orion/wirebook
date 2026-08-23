@@ -832,6 +832,7 @@ const Core = (() => {
     for (const [k, v] of Object.entries(meta || {})) {
       const f = specs.get(k);
       if (!f) continue;
+      if (v === '' || v === null) continue;   // an unfilled editor placeholder
       const num = typeof v === 'number';
       if ((f.type === 'number' || f.type === 'integer') && !num) {
         err(`${where}.${k} should be a ${f.type}${f.unit ? ' in ' + f.unit : ''}, got ${JSON.stringify(v)}`);

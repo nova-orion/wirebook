@@ -734,7 +734,23 @@ function embedUsedFields() {
 
 // Every path that turns the model into bytes goes through here, so a field can
 // never be in use in a file that does not define it.
+// A meta key with an empty value is an editor placeholder, not data. Dropping it
+// here rather than in Core keeps the browser and the CLI byte-identical on any
+// file a human wrote by hand.
+function pruneEmptyMeta() {
+  const clean = holder => {
+    if (!holder.meta) return;
+    const next = {};
+    for (const [k, v] of Object.entries(holder.meta)) if (v !== '' && v !== null) next[k] = v;
+    holder.meta = Object.keys(next).length ? next : null;
+  };
+  for (const n of S.inv.nodes) { clean(n); for (const p of n.pluggables) clean(p); }
+  for (const l of S.inv.links) clean(l);
+  for (const v of (S.inv.vlans || [])) clean(v);
+}
+
 function currentYaml() {
+  pruneEmptyMeta();
   embedUsedFields();
   return Core.serializeChecked(S.inv);
 }
@@ -750,9 +766,18 @@ function unitSuffix(spec) {
 function metaEditor(holder, scope) {
   const wrap = el('div', {});
   const meta = holder.meta || {};
+  // An empty value must NOT mean delete. Adding a key creates it empty so the
+  // row exists to type into; treating that as a removal made "+ ad hoc key" and
+  // every string field in the picker do nothing at all.
+  //
+  // Empty values are pruned on the way out (see pruneEmptyMeta), so a key you
+  // added and never filled simply is not written to the file.
   const setKey = (k, v) => {
+    holder.meta = { ...(holder.meta || {}), [k]: v === undefined || v === null ? '' : v };
+  };
+  const removeKey = (k) => {
     const next = { ...(holder.meta || {}) };
-    if (v === undefined || v === '' || v === null) delete next[k]; else next[k] = v;
+    delete next[k];
     holder.meta = Object.keys(next).length ? next : null;
   };
 
@@ -785,7 +810,7 @@ function metaEditor(holder, scope) {
         el('span', { class: 'chip', title: 'not declared in settings' }, 'ad hoc'),
         kIn, vIn,
         el('button', { title: 'declare this as a field', onclick: () => declareField(k, meta[k], scope) }, 'declare'),
-        el('button', { onclick: () => { setKey(k, undefined); touched(); } }, '×'));
+        el('button', { onclick: () => { removeKey(k); touched(); } }, '×'));
       rows.append(row);
       continue;
     }
@@ -793,7 +818,7 @@ function metaEditor(holder, scope) {
     row.append(metaControl(spec, meta[k], v => { setKey(k, v); touchedSoft(); }));
     const u = unitSuffix(spec);
     if (u) row.append(u);
-    row.append(el('button', { onclick: () => { setKey(k, undefined); touched(); } }, '×'));
+    row.append(el('button', { onclick: () => { removeKey(k); touched(); } }, '×'));
     rows.append(row);
   }
   wrap.append(rows);
@@ -822,12 +847,12 @@ function metaEditor(holder, scope) {
   return wrap;
 }
 
+// Deliberately empty, not zero and not the first enum member. Inventing 0 for a
+// numeric field writes a measurement the user never took, and it looks identical
+// to a real reading.
 function blankValue(spec) {
-  if (!spec) return '';
-  if (spec.type === 'boolean') return false;
-  if (spec.type === 'composite') return {};
-  if (spec.type === 'number' || spec.type === 'integer') return 0;
-  if (spec.type === 'enum' && spec.enum.length) return spec.enum[0];
+  if (spec && spec.type === 'boolean') return false;
+  if (spec && spec.type === 'composite') return {};
   return '';
 }
 
@@ -855,8 +880,11 @@ function metaControl(spec, value, onset) {
     }
     case 'select': {
       const sel = el('select');
+      sel.append(el('option', { value: '', selected: value === '' || value === undefined }, '— not set —'));
       const opts = spec.enum.map(String);
-      if (!opts.includes(String(value))) sel.append(el('option', { value: String(value) }, String(value)));
+      if (value !== '' && value !== undefined && !opts.includes(String(value))) {
+        sel.append(el('option', { value: String(value), selected: true }, String(value) + ' (off list)'));
+      }
       for (const o of opts) sel.append(el('option', { value: o, selected: String(value) === o }, o));
       sel.onchange = () => onset(sel.value);
       return sel;
@@ -1370,11 +1398,11 @@ function renderNode(v, ix, n) {
 
   v.append(el('h3', {}, 'meta'));
   v.append(rawHint(
-    'Anything you want, never validated. Useful here: <code>vendor</code> <code>model</code> <code>serial</code> ' +
-    '<code>watts</code> <code>volts_in</code> <code>volts_out</code> <code>speed</code> <code>pcie_gen</code> ' +
-    '<code>resolution</code> <code>poe_standard</code> <code>capacity</code> <code>purchased</code> ' +
-    '<code>ansible_host</code>. Numbers stay numbers. Put facts here rather than in the label, so ' +
-    '"12V 3A" is greppable instead of buried in prose.'));
+    'Anything you want; <code>meta</code> is open, so an undeclared key is legal and just marked ' +
+    '<i>ad hoc</i>. Declared fields get a typed input and their unit shown. ' +
+    '<b>Record hardware facts here, not configuration</b>: things like vendor, model, serial, ' +
+    'watts and connector types, which do not change unless the hardware does. Addresses, ' +
+    'hostnames and cluster names belong in whatever system sets them.'));
   v.append(metaEditor(n, 'node'));
 
   v.append(el('h3', {}, `pluggables (${n.pluggables.length})`));

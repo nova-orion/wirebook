@@ -585,6 +585,9 @@ func validate(inv *Inventory) []problem {
 			if f == nil {
 				continue // meta is open; an undeclared key is legal
 			}
+			if s, ok := v.(string); ok && s == "" {
+				continue // unfilled placeholder, not a wrong value
+			}
 			num, isNum := toFloat(v)
 			switch f.Type {
 			case "number", "integer":

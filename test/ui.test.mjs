@@ -200,4 +200,20 @@ test('deep link in the url selects a node', () => {
   assert.equal(ctx.__S.sel.id, 'free', 'hash was not honoured at boot');
 });
 
+test('adding a meta key actually adds one', () => {
+  const ctx = boot();
+  ctx.__ingest(example, 'inventory.example.yaml');
+  const n = ctx.__S.inv.nodes.find(x => x.pluggables.length);
+  const before = Object.keys(n.meta || {}).length;
+  // the two paths the UI offers: an ad hoc key, and a declared string field
+  vm.runInContext('globalThis.__add = (node, k, v) => { node.meta = { ...(node.meta||{}), [k]: v }; };', ctx);
+  ctx.__add(n, 'custom', '');
+  assert.equal(Object.keys(n.meta).length, before + 1, 'an empty value must persist in the model');
+  // ...but must not reach the file
+  ctx.__S.sel = { kind: 'view', id: 'yaml' };
+  ctx.__render();
+  assert.ok(!ctx.__Core.serialize(ctx.__S.inv).includes("custom: ''"),
+    'an unfilled placeholder should not be written');
+});
+
 console.log('\n' + pass + ' passed');
