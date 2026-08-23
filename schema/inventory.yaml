@@ -171,10 +171,6 @@ $defs:
       model: {type: string}
       serial: {type: string}
       asset_tag: {type: string}
-      ansible_host:
-        type: string
-        description: Bridge to the Ansible inventory, where the config lives.
-      k8s_node: {type: string, description: "Name in kubectl get nodes, often not the hostname"}
 
       # ---- machine specs, node level
       cpu: {type: string, description: "e.g. Intel N100"}
@@ -199,8 +195,6 @@ $defs:
       usb_gen: {type: string, description: "e.g. 2.0, 3.2 gen2, 4"}
       iface: {type: string, description: "What the OS calls this physical port, e.g. enp1s0"}
       wifi: {type: boolean, description: "No ethernet port; a wireless association is not a cable"}
-      ssid: {type: string, description: "Wireless network a VLAN is exposed as"}
-      network_profile: {type: string, description: "Pointer into the Ansible inventory; the profile itself lives there"}
       bridge: {type: string, description: "The Proxmox bridge or bond this port is enslaved to"}
 
       # ---- power. in and out kept apart, since an adapter has both
@@ -245,8 +239,7 @@ $defs:
 
       # ---- declared in settings.yaml
       btu: {type: ["number", "string"], description: "in BTU/h"}
-      console: {type: string, description: "How you reach it out of band"}
-      credentials_ref: {type: string, description: "A POINTER to where the secret lives"}
+      console: {type: string, description: "Baud rate and pinout of the physical header"}
       dimensions: {type: object, description: "Stored as a nested object, one key per part"}
       eol_date: {type: string}
       label_printed: {type: boolean, description: "Drives a labelling pass; false means go and stick a label on it"}
@@ -293,10 +286,11 @@ $defs:
           Optional. The machine's own hostname, as the machine itself reports it.
           One per device; addresses and MACs belong on the individual ports.
 
-          Names a machine has in other systems are separate and belong in `meta`,
-          because they legitimately differ: a Kubernetes node name goes in
-          `meta.k8s_node`, an Ansible inventory key in `meta.ansible_host`. Do not
-          normalise them into agreement, just record each one where it belongs.
+          A name the machine has in some other system is that system's business,
+          not this file's. No such field is shipped, because a Kubernetes node name
+          or an Ansible inventory key changes without the hardware changing. If you
+          want one anyway, declare your own field; it is stored in this file and
+          travels with it.
       type:
         type: string
         description: |

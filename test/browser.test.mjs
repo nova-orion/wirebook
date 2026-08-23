@@ -310,6 +310,100 @@ await test('removing a field with x actually removes it', async () => {
   await page.ctx.close();
 });
 
+/* ------------------------------------------------- shipped field scope ----- */
+
+await test('no shipped field points into another tool config', async () => {
+  const page = await open();
+  // These were shipped by mistake. Each one changes without the hardware
+  // changing, which is the test for whether it belongs in wirebook at all.
+  const banned = ['ansible_host', 'k8s_node', 'network_profile', 'ssid', 'credentials_ref'];
+  const present = await page.evaluate(b => FIELDS.filter(f => b.includes(f.id)).map(f => f.id), banned);
+  assert.deepEqual(present, [], 'config-pointer fields are back in the shipped settings');
+
+  // and no template may seed one either
+  const seeded = await page.evaluate(b => {
+    const hits = [];
+    for (const t of TPLS) for (const k of Object.keys((t.node && t.node.meta) || {})) {
+      if (b.includes(k)) hits.push(t.id + '.' + k);
+    }
+    return hits;
+  }, banned);
+  assert.deepEqual(seeded, [], 'a template still fills in a config pointer');
+  await page.ctx.close();
+});
+
+/* ------------------------------------------------- custom field notes ------ */
+
+await test('a field you declare can carry a note, and it persists', async () => {
+  const page = await open();
+  await load(page);
+  await openNodeWithMeta(page);
+
+  // an ad hoc key, then declare it with a note
+  await page.click('#view button:text-is("+ ad hoc key")');
+  await row(page, 'custom').waitFor({ timeout: 3000 });
+  await row(page, 'custom').locator('button:text-is("declare")').click();
+  await page.waitForSelector('#dlgBody textarea');
+
+  const NOTE = 'Which shelf the brick sits on. Fill in when the cable is short.';
+  await page.fill('#dlgBody input >> nth=0', 'shelf_note');
+  await page.fill('#dlgBody textarea', NOTE);
+  await page.click('#dlgFoot button:text-is("Declare")');
+  await page.waitForTimeout(80);
+
+  const spec = await page.evaluate(() => {
+    const f = FIELD_BY_ID.get('shelf_note');
+    return f ? { desc: f.description, shipped: f.shipped } : null;
+  });
+  assert.ok(spec, 'the field was not declared');
+  assert.equal(spec.desc, NOTE, 'the note was dropped');
+
+  // it must reach the file, since a custom spec lives in the inventory
+  const yaml = await page.evaluate(() => currentYaml());
+  assert.match(yaml, /id: shelf_note/, 'the spec did not reach the inventory');
+  assert.ok(yaml.includes(NOTE), 'the note did not reach the inventory');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('an existing custom field can be edited to add a note', async () => {
+  const page = await open();
+  await load(page);
+  // declare one with no note at all
+  await page.evaluate(() => {
+    S.inv.fields = [...(S.inv.fields || []), {
+      id: 'shelf_note', label: 'Shelf note', type: 'string', control: 'text',
+      unit: '', enum: [], open: false, min: null, max: null,
+      applies_to: ['node'], description: '', parts: [], shipped: false, builtin: false,
+    }];
+    refreshFields();
+    S.sel = { kind: 'view', id: 'settings' };
+    render();
+  });
+
+  const r = page.locator('#view tr:has(td:text-is("shelf_note"))');
+  await r.waitFor({ timeout: 3000 });
+  await r.locator('button:text-is("edit")').click();
+  await page.waitForSelector('#dlgBody textarea');
+  await page.fill('#dlgBody textarea', 'Added later.');
+  await page.click('#dlgFoot button:text-is("Declare")');
+  await page.waitForTimeout(80);
+
+  const desc = await page.evaluate(() => (FIELD_BY_ID.get('shelf_note') || {}).description);
+  assert.equal(desc, 'Added later.', 'editing an existing field did not save the note');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('the settings table shows a note column', async () => {
+  const page = await open();
+  await load(page);
+  await nav(page, 'Settings');
+  const heads = await page.locator('#view th').allTextContents();
+  assert.ok(heads.includes('note'), 'no note column: ' + heads.join(','));
+  await page.ctx.close();
+});
+
 /* --------------------------------------------------------- readability ----- */
 
 await test('tree never prints a literal null', async () => {

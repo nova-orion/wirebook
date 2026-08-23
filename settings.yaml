@@ -25,10 +25,12 @@ fields:
   - { id: model, label: Model, type: string, applies_to: [node] }
   - { id: serial, label: Serial number, type: string, applies_to: [node] }
   - { id: asset_tag, label: Asset tag, type: string, applies_to: [node] }
-  - { id: ansible_host, label: Ansible host, type: string, applies_to: [node],
-      description: Bridge to the Ansible inventory, where the config lives }
-  - { id: k8s_node, label: Kubernetes node name, type: string, applies_to: [node],
-      description: Name in kubectl get nodes. Expected to differ from the hostname; record both }
+  # Nothing shipped here points into another tool's configuration. ansible_host,
+  # k8s_node, network_profile, ssid and credentials_ref used to live in this file
+  # and were wrong to ship: every one of them changes without the hardware
+  # changing, which is the test for whether a fact belongs in wirebook at all.
+  # Declare them yourself if you want them. A custom field is stored in your own
+  # inventory file and travels with it.
 
   # ------------------------------------------------------------ machine specs
   - { id: cpu, label: CPU, type: string, applies_to: [node] }
@@ -60,10 +62,6 @@ fields:
       description: What the operating system calls this physical port, e.g. enp1s0 or igc0 }
   - { id: wifi, label: Wireless only, type: boolean, applies_to: [node],
       description: No ethernet port. A wireless association is not a cable, so it is recorded here rather than as a link }
-  - { id: ssid, label: SSID, type: string, applies_to: [vlan, node],
-      description: The wireless network this VLAN is exposed as. An SSID is a named logical network like a VLAN, so it is recorded on the VLAN rather than as its own object }
-  - { id: network_profile, label: Ansible network profile, type: string, applies_to: [node],
-      description: Pointer into the Ansible inventory. The profile itself is config and lives there, not here }
   - { id: bridge, label: Bridge / bond, type: string, applies_to: [pluggable],
       description: The Proxmox bridge or bond this port is enslaved to, e.g. vmbr0 }
 
@@ -134,9 +132,7 @@ fields:
   # -------------------------------------------------------------- management
   - { id: management_url, label: Management URL, type: string, applies_to: [node] }
   - { id: console, label: Serial console, type: string, control: textarea, applies_to: [node],
-      description: How you reach it out of band }
-  - { id: credentials_ref, label: Credentials reference, type: string, applies_to: [node],
-      description: A POINTER to where the secret lives, such as a Vault path. Never the secret }
+      description: Baud rate and pinout of the physical header. Where to reach it over the network is config }
 
   # -------------------------------------------------------------- provenance
   - { id: purchased, label: Purchased, type: string, applies_to: [node] }
@@ -379,7 +375,6 @@ templates:
       type: server
       meta:
         model: "{{model}}"
-        ansible_host: TODO
       pluggables:
         - { id: eth0, type: eth }
         - { id: eth1, type: eth }
@@ -399,7 +394,6 @@ templates:
       type: server
       meta:
         model: "{{model}}"
-        ansible_host: TODO
       pluggables:
         - { id: eth0, type: eth }
         - { id: psu, type: power, dir: in }
@@ -417,7 +411,6 @@ templates:
       type: server
       meta:
         model: "{{model}}"
-        ansible_host: TODO
       pluggables:
         - { id: eth0, type: eth }
         - { id: pwr, type: usb, dir: in }

@@ -966,27 +966,43 @@ function metaControl(spec, value, onset) {
 }
 
 // Promote an ad hoc key into a declared field without leaving the page.
-function declareField(id, sample, scope) {
-  $('dlgHead').textContent = 'Declare field';
+// `prior` is an existing spec being edited; omit it to declare a new field.
+function declareField(id, sample, scope, prior) {
+  $('dlgHead').textContent = prior ? 'Edit field' : 'Declare field';
   const body = $('dlgBody'); body.replaceChildren();
   const guessType = typeof sample === 'boolean' ? 'boolean'
     : typeof sample === 'number' ? (Number.isInteger(sample) ? 'integer' : 'number') : 'string';
+  const p = prior || {};
   const idIn = el('input', { value: id, style: 'width:100%' });
-  const labelIn = el('input', { value: id.replace(/_/g, ' '), style: 'width:100%' });
-  const typeIn = select(['string', 'number', 'integer', 'boolean', 'enum', 'composite'], guessType, () => {});
-  const unitIn = el('input', { placeholder: 'V, W, gbps, GB…', style: 'width:100%' });
-  const enumIn = el('input', { placeholder: 'comma separated, for enum', style: 'width:100%' });
+  const labelIn = el('input', { value: p.label || id.replace(/_/g, ' '), style: 'width:100%' });
+  const typeIn = select(['string', 'number', 'integer', 'boolean', 'enum', 'composite'],
+    p.type || guessType, () => {});
+  const unitIn = el('input', { value: p.unit || '', placeholder: 'V, W, gbps, GB…', style: 'width:100%' });
+  const enumIn = el('input', {
+    value: (p.enum || []).join(', '), placeholder: 'comma separated, for enum', style: 'width:100%',
+  });
   const openIn = el('input', { type: 'checkbox' });
+  openIn.checked = !!p.open;
+  // The shipped fields all carry a description and the UI shows it as the input's
+  // tooltip, so a field you declare yourself needs somewhere to say what it is
+  // for. Without this every custom field was an unexplained box six months later.
+  const descIn = el('textarea', {
+    value: p.description || '', rows: 2, style: 'width:100%',
+    placeholder: 'What this is for, and when to fill it in. Shown as the tooltip on the input.',
+  });
+  descIn.value = p.description || '';
   body.append(el('div', { class: 'hint' },
     'The id is the meta key, so declaring it applies to every place that key is already used. ' +
-    'Units go here, not in the value.'),
+    'Units go here, not in the value. The note is for your future self: say what the field means ' +
+    'and when it applies, because a bare label stops being obvious quickly.'),
     el('div', { class: 'grid2' },
       el('label', {}, 'id'), idIn,
       el('label', {}, 'label'), labelIn,
       el('label', {}, 'type'), typeIn,
       el('label', {}, 'unit'), unitIn,
       el('label', {}, 'options'), enumIn,
-      el('label', {}, 'allow off-list'), openIn));
+      el('label', {}, 'allow off-list'), openIn,
+      el('label', {}, 'note'), descIn));
   $('dlgFoot').replaceChildren(
     el('button', {
       class: 'btn-primary',
@@ -1000,7 +1016,9 @@ function declareField(id, sample, scope) {
         const spec = {
           id: fid, label: labelIn.value.trim() || fid, type: typeIn.value,
           unit: unitIn.value.trim(), enum: vals, open: openIn.checked,
-          min: null, max: null, applies_to: scope ? [scope] : [], description: '', parts: [],
+          min: null, max: null,
+          applies_to: prior ? (prior.applies_to || []) : (scope ? [scope] : []),
+          description: descIn.value.trim(), parts: prior ? (prior.parts || []) : [],
           builtin: false,
         };
         spec.control = vals.length ? (spec.open ? 'combo' : 'select')
@@ -1121,16 +1139,26 @@ function renderSettings(v) {
     el('td', {}, f.unit || el('span', { class: 'faint' }, '—')),
     el('td', { class: 'faint' }, f.enum.length ? f.enum.slice(0, 4).join(', ') + (f.open ? ' (open)' : '') : ''),
     el('td', { class: 'faint' }, f.applies_to.join(', ') || 'any'),
+    el('td', { class: 'faint', title: f.description || '' },
+      f.description
+        ? trunc(f.description, 60)
+        : el('span', { class: 'faint', title: 'no note; say what this field is for' }, '—')),
     el('td', { class: 'faint' }, used.has(f.id) ? `${used.get(f.id).length} use(s)` : ''),
-    el('td', { class: 'right' }, f.shipped ? null : el('button', {
-      onclick: () => {
-        S.inv.fields = (S.inv.fields || []).filter(x => x.id !== f.id);
-        refreshFields(); touched();
-      },
-    }, '×')),
+    el('td', { class: 'right' }, f.shipped ? null : el('span', {},
+      // editing an existing spec is the only way to add a note to a field you
+      // declared before there was anywhere to put one
+      el('button', { title: 'edit this field', onclick: () => declareField(f.id, '', null, f) }, 'edit'),
+      ' ',
+      el('button', {
+        onclick: () => {
+          S.inv.fields = (S.inv.fields || []).filter(x => x.id !== f.id);
+          refreshFields(); touched();
+        },
+      }, '×'))),
   ));
   v.append(el('table', {},
-    el('thead', {}, el('tr', {}, ...['id', 'label', 'type', 'unit', 'options', 'applies to', 'in use', ''].map(h => el('th', {}, h)))),
+    el('thead', {}, el('tr', {},
+      ...['id', 'label', 'type', 'unit', 'options', 'applies to', 'note', 'in use', ''].map(h => el('th', {}, h)))),
     el('tbody', {}, ...rows)));
 
   v.append(el('h3', {}, `templates (${TPLS.length})`));

@@ -2,7 +2,7 @@
 # Collects facts that can be turned into inventory. Run the section that matches
 # the box you are on; each writes one file into $OUT.
 #
-#   OUT=/mnt/j/Work/Personal/ansible-playbooks/docs/wirebook-import sh collect.sh linux
+#   OUT=~/wirebook-import sh collect.sh linux
 #
 # Nothing here reads a secret. It deliberately does NOT touch pfSense config.xml
 # or any Ansible vault: those carry credentials, and none of what is needed to
