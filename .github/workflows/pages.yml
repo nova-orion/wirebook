@@ -53,12 +53,22 @@ jobs:
 
       - name: assemble site
         run: |
+          set -eu
           mkdir -p site
-          cp index.html site/
-          cp -r schema site/
-          cp settings.yaml site/
-          cp README.md site/
-          ls -la site/
+          cp index.html settings.yaml README.md site/
+          cp -r css js third_party schema site/
+
+          # Verify every asset index.html references actually made it. This step
+          # silently shipped a site with no css or js when the single file was
+          # split into css/ and js/, so the list is now checked, not trusted.
+          missing=0
+          for a in $(grep -oE '(src|href)="[^"]+"' index.html | cut -d'"' -f2); do
+            case "$a" in http*|//*|\#*) continue ;; esac
+            if [ -f "site/$a" ]; then echo "  ok      $a"
+            else echo "  MISSING $a"; missing=1; fi
+          done
+          [ "$missing" = 0 ] || { echo "::error::the site is missing referenced assets"; exit 1; }
+          find site -type f | sort
 
       - uses: actions/upload-pages-artifact@v3
         with:
