@@ -77,15 +77,25 @@ jobs:
 
       # Baking an inventory in would leak the whole homelab topology.
       # .dockerignore excludes it; this proves it rather than trusting it.
-      - name: image must not contain an inventory
+      - name: image contains the app and no inventory
         run: |
-          docker create --name check wirebook:inspect
-          found=$(docker export check | tar -t | grep -E '(^|/)inventory\.yaml$' || true)
-          docker rm -f check >/dev/null
-          if [ -n "$found" ]; then
-            echo "an inventory is baked into the image:"; echo "$found"; exit 1
+          set -u
+          files=$(docker run --rm --entrypoint sh wirebook:inspect \
+                    -c 'find /usr/share/nginx/html -type f | sort')
+          echo "$files"
+
+          # Baking an inventory in would leak the whole homelab topology.
+          if printf '%s\n' "$files" | grep -qE '/inventory\.yaml$'; then
+            echo "::error::an inventory is baked into the image"; exit 1
           fi
-          echo "no inventory in the image"
+
+          # And the opposite failure: an image that ships but is missing the app.
+          for want in index.html settings.yaml css/wirebook.css js/core.js js/app.js \
+                      third_party/js-yaml.min.js; do
+            printf '%s\n' "$files" | grep -q "/usr/share/nginx/html/$want$" || {
+              echo "::error::$want is missing from the image"; exit 1; }
+          done
+          echo "app present, no inventory"
 
       - uses: docker/build-push-action@v6
         with:
