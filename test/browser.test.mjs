@@ -310,6 +310,58 @@ await test('removing a field with x actually removes it', async () => {
   await page.ctx.close();
 });
 
+/* ---------------------------------------------- fresh load, no file -------- */
+// These are the tests that were missing. "every view renders" loaded a file
+// first, and the stub-DOM empty-inventory test only asserted that render() did
+// not throw, never that anything was on screen. So a fresh visit to
+// /#view/settings showing one line of prose went unnoticed: the only way to
+// reach Settings was to create a node and navigate back.
+
+await test('deep link to settings works with no inventory open', async () => {
+  const page = await open({ hash: '#view/settings' });
+  const text = await page.textContent('#view');
+  assert.ok(!/Nothing to show here yet/.test(text),
+    'settings is gated behind opening a file');
+  // it must be the real thing: the shipped field specs and templates
+  assert.ok(await page.locator('#view h3').count() >= 2, 'no settings sections rendered');
+  assert.match(text, /fields \(\d+\)/, 'the fields table is missing');
+  assert.match(text, /templates \(\d+\)/, 'the templates table is missing');
+  assert.ok(await page.locator('#view tbody tr').count() > 20,
+    'the fields table rendered no rows');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('clicking Settings in the nav works with no inventory open', async () => {
+  const page = await open();
+  await nav(page, 'Settings');
+  assert.match(await page.textContent('#view'), /fields \(\d+\)/,
+    'the nav route to settings is gated too');
+  await page.ctx.close();
+});
+
+await test('a data view with no inventory still says which view it is', async () => {
+  const page = await open();
+  for (const [id, title] of [['problems', 'Problems'], ['free', 'Free ports'],
+    ['cables', 'Cables'], ['tree', 'Tree'], ['graph', 'Graph'],
+    ['vlans', 'VLANs'], ['yaml', 'YAML']]) {
+    await page.evaluate(i => { S.sel = { kind: 'view', id: i }; render(); }, id);
+    const h = await page.locator('#view h2').first().textContent().catch(() => '');
+    assert.equal((h || '').trim(), title,
+      `view "${id}" lost its heading when empty, so a bookmark looks broken`);
+    // and the empty state has to offer a way out, not just describe the problem
+    assert.ok(await page.locator('#view a').count() > 0,
+      `view "${id}" gave the user nothing to click`);
+  }
+  noErrs(page);
+  await page.ctx.close();
+});
+
+// A fourth test used to live here asserting only that #view was non-empty for
+// every view. It passed against the broken build, because one line of prose is
+// non-empty, so it was worse than no test: it reported coverage it did not have.
+// Deleted rather than kept. The three above are checked to fail without the fix.
+
 /* ------------------------------------------------- shipped field scope ----- */
 
 await test('no shipped field points into another tool config', async () => {

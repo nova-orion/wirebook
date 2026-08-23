@@ -1335,8 +1335,33 @@ function renderNav(ix) {
 
 function renderView(ix, probs) {
   const v = $('view'); v.replaceChildren();
-  if (!S.loaded && !S.inv.nodes.length) {
-    v.append(el('div', { class: 'empty' }, 'Open an inventory.yaml, or add a node to start a new one.'));
+  const blank = !S.loaded && !S.inv.nodes.length;
+
+  // Settings describes the editor, not your data: field specs and templates
+  // exist before any inventory does. Gating it behind "open a file first" meant
+  // /#view/settings on a fresh load showed one line of prose, and the only way
+  // to reach it was to create a node and navigate back.
+  if (blank && S.sel.id === 'settings') return renderSettings(v);
+
+  if (blank) {
+    // Keep the heading. Replacing the whole pane left no clue which view you had
+    // asked for, so a bookmarked link looked broken rather than empty.
+    const title = ({
+      problems: 'Problems', free: 'Free ports', cables: 'Cables', tree: 'Tree',
+      graph: 'Graph', vlans: 'VLANs', yaml: 'YAML',
+    })[S.sel.id];
+    if (title) v.append(el('h2', {}, title));
+    v.append(el('div', { class: 'empty' },
+      'Nothing to show here yet: this view reads your inventory, and none is open. ',
+      el('a', {
+        href: '#', onclick: e => { e.preventDefault(); doOpen(); },
+      }, 'Open an inventory.yaml'),
+      ', add a node in the sidebar to start a new one, or look at ',
+      el('a', {
+        href: '#view/settings',
+        onclick: e => { e.preventDefault(); S.sel = { kind: 'view', id: 'settings' }; render(); },
+      }, 'Settings'),
+      ', which works without one.'));
     return;
   }
   if (S.sel.kind === 'node') return renderNode(v, ix, nodeById(S.sel.id));
