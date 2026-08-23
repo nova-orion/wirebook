@@ -1407,9 +1407,11 @@ function renderNode(v, ix, n) {
 
   v.append(el('h3', {}, `pluggables (${n.pluggables.length})`));
   v.append(rawHint(
-    '<b>blocked?</b> is for a socket that is unusable but not occupied: the classic case is a fat ' +
-    'power brick in one outlet overhanging the one next to it. Record it against the cable whose plug ' +
-    'covers it, and unplugging that cable frees the socket again automatically.<br>' +
+    'Every port is in one of three states. <b>used</b>: something is plugged in. ' +
+    '<b>blocked</b>: nothing is plugged in and you still cannot use it, because a wide plug in the ' +
+    'socket next door is sitting over it. <b>free</b>: empty and actually usable. Only free ports are ' +
+    'offered when you go looking for somewhere to put a cable, which is the entire reason the middle ' +
+    'state exists. Use <b>blocked by…</b> to name the cable that is in the way.<br>' +
     'Ports where a cable can land. <b>type</b> is load-bearing: a cable is only allowed between two ports of the same type. ' +
     '<b>dir</b> is for one-way connectors, where <code>out</code> is the providing side. A UPS outlet, a motherboard SATA port ' +
     'and a PSU brick tip are all <code>out</code>; a device inlet is <code>in</code>. Leave dir blank for symmetric things like ethernet. ' +
@@ -1436,7 +1438,7 @@ function renderNode(v, ix, n) {
           el('button', { onclick: () => pickPeer(ix, ref, p) }, 'connect'), ' ',
           S.inv.links.length
             ? el('button', { title: 'a plug on another cable physically covers this socket',
-                onclick: () => markBlocked(ix, n, p) }, 'blocked?')
+                onclick: () => markBlocked(ix, n, p) }, 'blocked by…')
             : null));
       }
       S.openPorts = S.openPorts || new Set();
@@ -1668,12 +1670,13 @@ function markBlocked(ix, node, port) {
     Core.splitRef(l.a)[0] === node.id || Core.splitRef(l.b)[0] === node.id);
   const rest = cables.filter(l => !near.includes(l));
 
-  $('dlgHead').textContent = 'What blocks ' + ref + '?';
+  $('dlgHead').textContent = 'What is in the way of ' + ref + '?';
   const body = $('dlgBody'); body.replaceChildren();
   body.append(rawHint(
-    'Pick the cable whose plug physically covers this socket. It gets recorded on that ' +
-    'cable, because the obstruction belongs to the connection rather than to either end. ' +
-    'Cables on <b>this</b> node are listed first, which is the answer almost every time.'));
+    'Nothing is plugged into this socket, but something is in the way of it: usually a wide ' +
+    'power brick in the socket next door.<br>Pick the cable that brick belongs to. It is recorded ' +
+    'against that cable, so unplugging it makes this socket usable again without you having to ' +
+    'remember. Cables on <b>this</b> node come first, which is the answer almost every time.'));
   const list = el('div', {});
   const add = (l, tag) => list.append(el('div', {
     class: 'opt',
