@@ -24,7 +24,9 @@ A physical inventory of hardware and the cables between it. Two artifacts:
 | `schema/settings.yaml` | JSON Schema (in YAML) for settings. |
 | `inventory.yaml` | The actual data. Canonical form, produced by `inv fmt`. |
 | `settings.yaml` | Field specs and templates. Also embedded in `index.html`. |
-| `test/core.test.mjs` | Unit tests. |
+| `test/core.test.mjs` | Unit tests for the model. No DOM. |
+| `test/ui.test.mjs` | `app.js` against a stubbed DOM. Catches crashes, nothing visual. |
+| `test/browser.test.mjs` | Real Chromium. Required for anything a user can see. |
 | `test/sweep.mjs` | Emitter parity enforcement. Run it after any emitter change. |
 
 **Classic scripts, not ES modules, and the settings payload is inline rather
@@ -200,10 +202,49 @@ CI. If you add a check, classify it by that test and not by how serious it feels
 ## Tests
 
 ```sh
-mise run test          # everything: vet, build, JS suite, emitter sweep
-node test/core.test.mjs
-node test/sweep.mjs
+npm run setup          # once: playwright + chromium
+npm test               # core, stub-DOM ui, real browser, emitter sweep
+mise run test          # plus vet, build, Go tests
+
+node test/core.test.mjs      # model logic, no DOM
+node test/ui.test.mjs        # app.js against a stubbed DOM
+node test/browser.test.mjs   # real Chromium
+node test/sweep.mjs          # Go vs browser emitter parity
 ```
+
+### Anything a user can see needs `test/browser.test.mjs`
+
+This is not a style preference. The stub DOM in `ui.test.mjs` cannot dispatch a
+real event, compute a style, or lay anything out, and it reported 10 passes while
+the shipped app:
+
+- deleted every meta field the instant you added one, because `touched()` calls
+  `saveDraft()` -> `currentYaml()` **before** it re-renders, and the prune step
+  mutated the live model
+- panned the graph at a sixth of pointer speed, because the `viewBox` was the
+  content size while the element was `100%` wide
+- printed `cpu null · ram null` in the tree, because the guard checked `''` and
+  `undefined` but not `null`
+- drew node links in the UA stylesheet's default blue on a near-black background
+
+Not one of those is a logic bug, so not one was reachable without a browser.
+Worse, the stub test that was supposed to cover the first one asserted on a
+helper defined inside the test file rather than on the app's real code path, so
+it was guaranteed to pass. **If a test does not exercise the same function the
+user's click reaches, it is not testing anything.**
+
+Two traps that made browser tests pass while proving nothing:
+
+- **Wait on the model, not on chrome.** `waitFor(#hStat contains "node")` was
+  satisfied by `0 nodes` before the file loaded, so loops over the inventory ran
+  zero times and reported success. Wait on `S.loaded && S.inv.nodes.length > 0`.
+- **Do not hard-code a field id.** The meta picker only offers fields that are
+  not already set, so `selectOption('cpu')` hung forever on a node that already
+  had one. Ask the page what it is offering (`offered()`), then pick by type.
+
+Meta rows carry `class="metarow"` and `data-key`, and views are addressable by
+`#nav .row`, so tests can target one control exactly instead of guessing at
+label text. Keep those hooks.
 
 Network is restricted here: Go module fetches need `GOPROXY=off` against the
 local module cache. `gopkg.in/yaml.v3` is the only dependency and it is cached.

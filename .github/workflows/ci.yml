@@ -32,8 +32,7 @@ jobs:
       - run: go vet ./cmd/inv
       - run: go build ./...
 
-      # The suite extracts the CORE block out of index.html and runs it under
-      # node, so the browser logic is covered without a browser.
+      # Runs js/core.js under node, so the model logic is covered without a browser.
       - name: unit tests
         run: node test/core.test.mjs
 
@@ -41,6 +40,18 @@ jobs:
       # this replaced could not see a ReferenceError, and one was live.
       - name: ui smoke tests
         run: node test/ui.test.mjs
+
+      # The stub DOM cannot dispatch real events, compute a style or lay anything
+      # out, and it passed happily while the shipped app deleted every meta field
+      # the moment you added one, panned the graph at a sixth of pointer speed,
+      # printed "cpu null" in the tree and drew links in unreadable UA blue.
+      # Real Chromium is the only thing that sees those, so it gates the build.
+      - name: install browser
+        run: |
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+      - name: browser tests
+        run: node test/browser.test.mjs
 
       # The one that matters: the Go emitter and the browser emitter must produce
       # byte-identical YAML, or saving from the editor reformats the whole file

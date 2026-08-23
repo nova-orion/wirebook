@@ -14,14 +14,22 @@ description = "Rewrite inventory.yaml in canonical form"
 run = "go run ./cmd/inv fmt -w"
 
 [tasks.test]
-description = "Full suite: Go vet/build, JS tests, exhaustive emitter sweep"
+description = "Full suite: Go vet/build/tests, JS tests, real browser, emitter sweep"
 run = [
   "go vet ./cmd/inv",
   "go build -o /dev/null ./cmd/inv",
+  "go test ./...",
   "node test/core.test.mjs",
   "node test/ui.test.mjs",
+  # Needs `npm run setup` once. The stub DOM above cannot see a layout, style or
+  # event-ordering bug, and all four of those shipped to a user.
+  "node test/browser.test.mjs",
   "node test/sweep.mjs",
 ]
+
+[tasks.browser]
+description = "Real Chromium tests (npm run setup first)"
+run = "node test/browser.test.mjs"
 
 [tasks.sweep]
 description = "Exhaustive scalar-quoting parity check against `inv fmt`"

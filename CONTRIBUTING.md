@@ -15,8 +15,13 @@ maintained before you file one:
 ## Before opening a PR
 
 ```sh
-mise run test     # go vet, go build, unit tests, emitter parity sweep
+npm run setup     # once: playwright + chromium
+mise run test     # go vet/build/test, JS tests, real browser tests, emitter sweep
 ```
+
+If your change affects anything a user can see, add a case to
+`test/browser.test.mjs`. The stubbed-DOM suite cannot dispatch an event, compute
+a style or lay anything out, so it will pass a broken screen without complaint.
 
 Read [AGENTS.md](AGENTS.md) first. The one rule that trips people up: the Go CLI
 and the browser editor are two implementations of the same canonical YAML format

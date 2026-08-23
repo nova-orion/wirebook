@@ -46,10 +46,18 @@ jobs:
       # present before the tests run rather than as a side effect of an earlier step.
       - run: go mod download
 
+      # This workflow publishes the app the user actually clicks on, so it gates
+      # on the real browser suite too, not just the model tests. A green pipeline
+      # has already shipped a page whose CSS and JS 404'd and an editor whose
+      # meta fields deleted themselves.
       - name: verify before publishing
         run: |
           node test/core.test.mjs
+          node test/ui.test.mjs
           node test/sweep.mjs
+          npm install --no-audit --no-fund
+          npx playwright install --with-deps chromium
+          node test/browser.test.mjs
 
       - name: assemble site
         run: |

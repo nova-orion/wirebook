@@ -115,6 +115,7 @@ function boot() {
   // scope, so a later run in the same context can reach it
   vm.runInContext('globalThis.__S = S; globalThis.__render = render; '
     + 'globalThis.__ingest = ingest; globalThis.__Core = Core; '
+    + 'globalThis.__currentYaml = currentYaml; globalThis.__touched = touched; '
     + 'globalThis.__FIELDS = () => FIELDS; globalThis.__TPLS = () => TPLS;', ctx);
   return ctx;
 }
@@ -200,20 +201,36 @@ test('deep link in the url selects a node', () => {
   assert.equal(ctx.__S.sel.id, 'free', 'hash was not honoured at boot');
 });
 
-test('adding a meta key actually adds one', () => {
+// The previous test here defined its own __add helper and asserted on that,
+// which is worthless: it passed for weeks while the real picker was deleting
+// every field the moment it was added. Clicking real controls needs real event
+// dispatch, so that behaviour is covered in test/browser.test.mjs. What IS
+// testable without a browser is the invariant the bug violated.
+test('serialising does not mutate the model', () => {
   const ctx = boot();
   ctx.__ingest(example, 'inventory.example.yaml');
   const n = ctx.__S.inv.nodes.find(x => x.pluggables.length);
-  const before = Object.keys(n.meta || {}).length;
-  // the two paths the UI offers: an ad hoc key, and a declared string field
-  vm.runInContext('globalThis.__add = (node, k, v) => { node.meta = { ...(node.meta||{}), [k]: v }; };', ctx);
-  ctx.__add(n, 'custom', '');
-  assert.equal(Object.keys(n.meta).length, before + 1, 'an empty value must persist in the model');
-  // ...but must not reach the file
-  ctx.__S.sel = { kind: 'view', id: 'yaml' };
-  ctx.__render();
-  assert.ok(!ctx.__Core.serialize(ctx.__S.inv).includes("custom: ''"),
-    'an unfilled placeholder should not be written');
+
+  // an editor placeholder: present in the model, absent from the file
+  n.meta = { ...(n.meta || {}), wb_placeholder: '' };
+  const yaml = ctx.__currentYaml();
+
+  assert.ok(!yaml.includes('wb_placeholder'), 'an unfilled placeholder reached the file');
+  assert.ok('wb_placeholder' in (n.meta || {}),
+    'serialising deleted the placeholder from the live model, so the row would vanish on re-render');
+
+  // a filled value must survive both ways
+  n.meta.wb_placeholder = 'x';
+  assert.match(ctx.__currentYaml(), /wb_placeholder: x/, 'a real value did not reach the file');
+});
+
+test('an unchanged edit does not stack a no-op undo', () => {
+  const ctx = boot();
+  ctx.__ingest(example, 'inventory.example.yaml');
+  const depth = ctx.__S.undo.length;
+  ctx.__touched();                       // nothing changed
+  assert.equal(ctx.__S.undo.length, depth,
+    'a no-op edit pushed a history entry, which makes the next undo do nothing');
 });
 
 console.log('\n' + pass + ' passed');

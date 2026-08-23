@@ -111,13 +111,22 @@ let lastSnap = null;
 function snapshot() { try { return currentYaml(); } catch { return null; } }
 function resetHistory() { S.undo = []; S.redo = []; lastSnap = snapshot(); }
 
-function touched() {
-  if (lastSnap !== null) {
+// Record a history entry only if the document actually changed. Pushing
+// unconditionally meant an edit that emits the same bytes (adding an empty
+// placeholder field, or a change event fired twice for one keystroke) left a
+// duplicate on the stack, and the first press of undo then did nothing visible.
+function pushHistory() {
+  const cur = snapshot();
+  if (lastSnap !== null && lastSnap !== cur) {
     S.undo.push(lastSnap);
     if (S.undo.length > UNDO_MAX) S.undo.shift();
     S.redo = [];
   }
-  lastSnap = snapshot();
+  lastSnap = cur;
+}
+
+function touched() {
+  pushHistory();
   S.dirty = true; saveDraft(); render();
 }
 
@@ -708,14 +717,17 @@ const persistSettings = persistTemplatesOnly;
 // Any field actually in use that the shipped settings do not provide gets written
 // into the inventory, so the file stands alone. Nothing is pruned: a spec you
 // declared but have not used yet is intent, not litter.
-function embedUsedFields() {
+// Scans `doc`, which is the pruned document about to be written, so an unfilled
+// placeholder does not drag a field spec into the file alongside no data.
+function embedUsedFields(doc) {
+  const src = doc || S.inv;
   const used = new Set();
-  for (const n of S.inv.nodes) {
+  for (const n of src.nodes) {
     for (const k of Object.keys(n.meta || {})) used.add(k);
     for (const p of n.pluggables) for (const k of Object.keys(p.meta || {})) used.add(k);
   }
-  for (const l of S.inv.links) for (const k of Object.keys(l.meta || {})) used.add(k);
-  for (const v of (S.inv.vlans || [])) for (const k of Object.keys(v.meta || {})) used.add(k);
+  for (const l of src.links) for (const k of Object.keys(l.meta || {})) used.add(k);
+  for (const v of (src.vlans || [])) for (const k of Object.keys(v.meta || {})) used.add(k);
 
   const shipped = new Map(SHIPPED.map(f => [f.id, f]));
   const embedded = new Map((S.inv.fields || []).map(f => [f.id, f]));
@@ -737,22 +749,34 @@ function embedUsedFields() {
 // A meta key with an empty value is an editor placeholder, not data. Dropping it
 // here rather than in Core keeps the browser and the CLI byte-identical on any
 // file a human wrote by hand.
-function pruneEmptyMeta() {
+//
+// This MUST return a copy and leave S.inv alone. An earlier version pruned in
+// place, and because touched() calls saveDraft() -> currentYaml() before it
+// re-renders, adding a field deleted it again before the row could be drawn:
+// every string, number and enum field in the picker appeared to do nothing.
+function prunedForOutput(inv) {
   const clean = holder => {
-    if (!holder.meta) return;
+    if (!holder.meta) return holder;
     const next = {};
-    for (const [k, v] of Object.entries(holder.meta)) if (v !== '' && v !== null) next[k] = v;
-    holder.meta = Object.keys(next).length ? next : null;
+    for (const [k, v] of Object.entries(holder.meta)) {
+      if (v === '' || v === null || v === undefined) continue;
+      // an untouched composite is a placeholder too, and would emit `k: {}`
+      if (typeof v === 'object' && !Array.isArray(v) && !Object.keys(v).length) continue;
+      next[k] = v;
+    }
+    return { ...holder, meta: Object.keys(next).length ? next : null };
   };
-  for (const n of S.inv.nodes) { clean(n); for (const p of n.pluggables) clean(p); }
-  for (const l of S.inv.links) clean(l);
-  for (const v of (S.inv.vlans || [])) clean(v);
+  return {
+    ...inv,
+    nodes: inv.nodes.map(n => ({ ...clean(n), pluggables: n.pluggables.map(clean) })),
+    links: inv.links.map(clean),
+    vlans: (inv.vlans || []).map(clean),
+  };
 }
 
 function currentYaml() {
-  pruneEmptyMeta();
   embedUsedFields();
-  return Core.serializeChecked(S.inv);
+  return Core.serializeChecked(prunedForOutput(S.inv));
 }
 
 function specsFor(scope) {
@@ -784,7 +808,12 @@ function metaEditor(holder, scope) {
   const rows = el('div', {});
   for (const k of Object.keys(meta).sort()) {
     const spec = FIELD_BY_ID.get(k);
-    const row = el('div', { style: 'display:flex;gap:6px;align-items:center;margin-bottom:4px;flex-wrap:wrap' });
+    // class and data-key are load bearing for the browser tests: they let a test
+    // address one meta row exactly instead of guessing at its label text.
+    const row = el('div', {
+      class: 'metarow', 'data-key': k,
+      style: 'display:flex;gap:6px;align-items:center;margin-bottom:4px;flex-wrap:wrap',
+    });
 
     row.append(el('span', {
       style: 'min-width:150px;color:var(--dim)',
@@ -1585,12 +1614,7 @@ function isDescendant(candidate, ancestor) {
 // synchronous re-render on blur destroys the element the browser was about to
 // focus, which makes Tab-through data entry impossible and resets scroll.
 function touchedSoft() {
-  if (lastSnap !== null) {
-    S.undo.push(lastSnap);
-    if (S.undo.length > UNDO_MAX) S.undo.shift();
-    S.redo = [];
-  }
-  lastSnap = snapshot();
+  pushHistory();
   S.dirty = true;
   saveDraft();
   renderHeader(Core.validate(S.inv, FIELD_BY_ID));
@@ -1976,7 +2000,10 @@ function renderTree(v, ix) {
     if (ips.length) bits.push(ips.join(', '));
     for (const k of ['cpu', 'ram', 'storage', 'gpu', 'model', 'watts', 'volts', 'capacity', 'resolution']) {
       const val = n.meta && n.meta[k];
-      if (val !== undefined && val !== '' && String(val) !== 'TODO') bits.push(`${k} ${val}`);
+      // `val == null` covers null as well as undefined: a null slipped through
+      // and every row read "cpu null · ram null · storage null".
+      if (val == null || val === '' || String(val) === 'TODO') continue;
+      bits.push(`${k} ${val}`);
     }
     const ports = n.pluggables.length;
     if (ports) {
@@ -2045,8 +2072,9 @@ function renderGraph(v, ix) {
   v.append(el('h2', {}, 'Graph'));
   v.append(rawHint(
     'One column per location, nodes stacked inside. Every line is a real cable between two real ports, so a chain like ' +
-    'outlet -> PSU brick -> device reads left to right. Dashed thick lines carry PoE. Scroll to zoom, drag to pan, ' +
-    'click a node to open it. Zoom is <b>ctrl+wheel</b>, so a plain scroll still moves the page.'));
+    'outlet -> PSU brick -> device reads left to right. Dashed thick lines carry PoE. <b>Drag</b> to pan, ' +
+    '<b>ctrl+scroll</b> (or pinch) to zoom toward the pointer, <b>click</b> a node to open it. Zoom needs ctrl held so ' +
+    'that a plain scroll still moves the page instead of trapping it here.'));
 
   S.gfilter = S.gfilter || 'all';
   const bar = el('div', { style: 'display:flex;gap:6px;margin:8px 0;align-items:center;flex-wrap:wrap' });
@@ -2081,7 +2109,12 @@ function renderGraph(v, ix) {
     }
   })('');
   for (const l of locs) if (!order.includes(l)) order.push(l);
-  const colIds = [...order.map(l => l.id), ''];
+  // Only columns that hold something. A location whose devices all live in child
+  // locations drew an empty column, which shoved the diagram hundreds of pixels
+  // right and left the frame looking mostly blank.
+  const memberCount = cid =>
+    S.inv.nodes.filter(n => n.type !== 'location' && !n.virtual && locOf(n) === cid).length;
+  const colIds = [...order.map(l => l.id), ''].filter(cid => memberCount(cid) > 0);
 
   const wanted = l => {
     if (S.gfilter === 'all') return true;
@@ -2180,38 +2213,104 @@ function renderGraph(v, ix) {
   const apply = () => g.setAttribute('transform', 'translate(' + S.gz.tx + ',' + S.gz.ty + ') scale(' + S.gz.k + ')');
   S.gz = z; apply();
 
+  const viewH = Math.min(height, 720);
   const root = svgEl('svg', {
-    width: '100%', height: Math.min(height, 720),
-    viewBox: '0 0 ' + width + ' ' + height,
-    style: 'background:' + BG + ';border:1px solid var(--line);border-radius:6px;touch-action:none;display:block',
+    width: '100%', height: viewH,
+    viewBox: '0 0 ' + width + ' ' + viewH,
+    style: 'background:' + BG + ';border:1px solid var(--line);border-radius:6px;' +
+      'touch-action:none;display:block;cursor:grab;user-select:none;-webkit-user-select:none',
   }, g);
+
+  // The viewBox is kept equal to the element's own pixel box, so one user unit is
+  // one CSS pixel. That matters for two reasons this view got wrong before:
+  // panning becomes 1:1 with the pointer instead of needing a scale conversion,
+  // and the viewBox stops disagreeing with the element's aspect ratio, which had
+  // the browser fitting by height and centring the diagram in a sea of blank space.
+  const syncBox = () => {
+    const cw = root.clientWidth;
+    if (cw > 0) root.setAttribute('viewBox', '0 0 ' + cw + ' ' + viewH);
+  };
+  syncBox();
+  if (typeof queueMicrotask === 'function') queueMicrotask(syncBox);
+  if (typeof ResizeObserver === 'function') new ResizeObserver(syncBox).observe(root);
+
+  // Pointer position in user units. Same thing as element-relative pixels now.
+  const at = e => {
+    const r = root.getBoundingClientRect ? root.getBoundingClientRect() : { left: 0, top: 0 };
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  };
 
   // Require a modifier: swallowing every wheel event meant the page could not be
   // scrolled past the diagram.
   root.addEventListener('wheel', e => {
     if (!e.ctrlKey && !e.metaKey) return;
     e.preventDefault();
-    S.gz = { ...S.gz, k: Math.min(4, Math.max(0.25, S.gz.k * (e.deltaY < 0 ? 1.12 : 0.89))) };
+    const k = S.gz.k;
+    const k2 = Math.min(4, Math.max(0.25, k * (e.deltaY < 0 ? 1.12 : 0.89)));
+    if (k2 === k) return;
+    // Hold whatever is under the pointer still. Scaling about the origin instead
+    // threw the diagram off screen on the first notch of the wheel.
+    const p = at(e), r = k2 / k;
+    S.gz = { k: k2, tx: p.x - (p.x - S.gz.tx) * r, ty: p.y - (p.y - S.gz.ty) * r };
     apply();
   }, { passive: false });
+
   let drag = null;
+  // A drag that starts on a node used to pan and then fire that node's click on
+  // release, so trying to move the diagram navigated away from it.
+  let moved = false;
+  const endDrag = () => {
+    if (!drag) return;
+    drag = null;
+    root.style.cursor = 'grab';
+  };
   root.addEventListener('pointerdown', e => {
-    drag = { x: e.clientX, y: e.clientY, tx: S.gz.tx, ty: S.gz.ty };
-    root.setPointerCapture(e.pointerId);
+    if (e.button !== 0 && e.button !== 1) return;
+    // Deliberately no preventDefault here: on pointerdown it suppresses the
+    // compatibility mouse events, which killed the click that opens a node.
+    // Text selection is handled by user-select:none in the element style instead.
+    drag = { x: e.clientX, y: e.clientY, id: e.pointerId, tx: S.gz.tx, ty: S.gz.ty };
+    moved = false;
+    root.style.cursor = 'grabbing';
+    // Capture is taken in pointermove, not here. Capturing on pointerdown
+    // retargets the derived click event to this element, so the click never
+    // reached the node box and clicking a node in the graph did nothing.
   });
   root.addEventListener('pointermove', e => {
     if (!drag) return;
-    const s = width / (root.clientWidth || width);
-    S.gz = { k: S.gz.k, tx: drag.tx + (e.clientX - drag.x) * s, ty: drag.ty + (e.clientY - drag.y) * s };
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (!moved && dx * dx + dy * dy > 16) {
+      moved = true;
+      // Only now: keeps a pan alive if the pointer leaves the frame mid-drag.
+      if (root.setPointerCapture) { try { root.setPointerCapture(drag.id); } catch { /* gone */ } }
+    }
+    S.gz = { k: S.gz.k, tx: drag.tx + dx, ty: drag.ty + dy };
     apply();
   });
   // Without pointercancel a drag interrupted by a context menu left `drag` set,
   // and the graph then panned on plain mouse movement with no button held.
-  root.addEventListener('pointerup', () => { drag = null; });
-  root.addEventListener('pointercancel', () => { drag = null; });
-  root.addEventListener('pointerleave', () => { drag = null; });
+  // pointerleave is deliberately not used: with the pointer captured it can fire
+  // mid-gesture and drop a pan that merely strayed outside the frame.
+  root.addEventListener('pointerup', endDrag);
+  root.addEventListener('pointercancel', endDrag);
+  root.addEventListener('lostpointercapture', endDrag);
+  root.addEventListener('click', e => {
+    if (!moved) return;
+    moved = false;
+    if (e.stopPropagation) e.stopPropagation();
+    if (e.preventDefault) e.preventDefault();
+  }, true);
 
-  bar.append(el('button', { style: 'margin-left:6px', onclick: () => { S.gz = { k: 1, tx: 0, ty: 0 }; apply(); } }, 'reset view'));
+  // Scale the diagram down to fit the frame if it overflows, rather than just
+  // returning to 1:1 and leaving the far end off screen.
+  const fit = () => {
+    const cw = root.clientWidth || width;
+    const k = Math.min(1, cw / width, viewH / height);
+    S.gz = { k, tx: 0, ty: 0 };
+    apply();
+  };
+  bar.append(el('button', { style: 'margin-left:6px', onclick: fit }, 'fit'));
+  bar.append(el('button', { onclick: () => { S.gz = { k: 1, tx: 0, ty: 0 }; apply(); } }, '1:1'));
   bar.append(el('button', { onclick: () => exportSvg(root, width, height) }, 'SVG'));
   bar.append(el('button', { onclick: () => exportPng(root, width, height) }, 'PNG'));
 
