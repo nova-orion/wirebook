@@ -1407,6 +1407,9 @@ function renderNode(v, ix, n) {
 
   v.append(el('h3', {}, `pluggables (${n.pluggables.length})`));
   v.append(rawHint(
+    '<b>blocked?</b> is for a socket that is unusable but not occupied: the classic case is a fat ' +
+    'power brick in one outlet overhanging the one next to it. Record it against the cable whose plug ' +
+    'covers it, and unplugging that cable frees the socket again automatically.<br>' +
     'Ports where a cable can land. <b>type</b> is load-bearing: a cable is only allowed between two ports of the same type. ' +
     '<b>dir</b> is for one-way connectors, where <code>out</code> is the providing side. A UPS outlet, a motherboard SATA port ' +
     'and a PSU brick tip are all <code>out</code>; a device inlet is <code>in</code>. Leave dir blank for symmetric things like ethernet. ' +
@@ -1431,7 +1434,10 @@ function renderNode(v, ix, n) {
         statusCell.append(el('div', {},
           el('span', { class: 'chip free' }, cables.length ? `${left} of ${Core.capacity(p)} free` : 'free'), ' ',
           el('button', { onclick: () => pickPeer(ix, ref, p) }, 'connect'), ' ',
-          el('button', { title: 'a plug physically covers this socket', onclick: () => markBlocked(ix, n, p) }, 'blocked?')));
+          S.inv.links.length
+            ? el('button', { title: 'a plug on another cable physically covers this socket',
+                onclick: () => markBlocked(ix, n, p) }, 'blocked?')
+            : null));
       }
       S.openPorts = S.openPorts || new Set();
       const open = S.openPorts.has(ref);
@@ -1678,7 +1684,11 @@ function markBlocked(ix, node, port) {
   }, `${l.a} <-> ${l.b}`, tag ? el('span', { class: 'faint' }, '  ' + tag) : null));
   for (const l of near) add(l, 'this node');
   for (const l of rest) add(l, '');
-  if (!cables.length) body.append(el('div', { class: 'faint' }, 'No cables recorded yet.'));
+  if (!cables.length) {
+    body.append(el('div', { class: 'faint' },
+      'No cables recorded yet. A blocked socket is blocked BY something: record the cable '
+      + 'whose plug covers it first, then come back and attribute it.'));
+  }
   body.append(list);
   $('dlgFoot').replaceChildren(el('button', { onclick: closeDlg }, 'Cancel'));
   openDlg();
