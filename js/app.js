@@ -301,6 +301,37 @@ function toast(msg) {
   clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), 1600);
 }
 
+// Clipboard writes need a secure context and can be refused outright, which is
+// the normal case when this is served over plain http on a LAN address or through
+// a port-forward. The two call sites got this wrong in opposite directions: one
+// said "copied" unconditionally, the other had no catch at all, so a refusal
+// became an uncaught error and the user was told nothing. Fall back to showing
+// the text pre-selected, so ctrl+c still works.
+async function copyText(text, okMsg, title) {
+  try {
+    if (!navigator.clipboard) throw new Error('no clipboard api');
+    await navigator.clipboard.writeText(text);
+    toast(okMsg);
+    return true;
+  } catch {
+    $('dlgHead').textContent = title;
+    const ta = el('textarea', {
+      readonly: true, rows: String(Math.min(18, text.split('\n').length + 1)),
+      style: 'width:100%;font:inherit',
+    });
+    ta.value = text;
+    $('dlgBody').replaceChildren(
+      el('div', { class: 'hint' },
+        'The browser refused clipboard access, which it does unless the page is on ' +
+        'https or localhost. The text is selected below, so ctrl+c still works.'),
+      ta);
+    $('dlgFoot').replaceChildren(el('button', { class: 'btn-primary', onclick: closeDlg }, 'OK'));
+    openDlg();
+    ta.focus(); ta.select();
+    return false;
+  }
+}
+
 /* ---- mutations ---------------------------------------------------------- */
 function nodeById(id) { return S.inv.nodes.find(n => n.id === id); }
 
@@ -535,7 +566,7 @@ function templateForm(tpl) {
         const probe = {};
         for (const w of tpl.vars) probe[w.name] = w.name === v.name ? String(+start + i) : w.default;
         let id = '';
-        try { id = Core.fromTemplate(tpl, probe, 'probe').id; } catch { break; }
+        try { id = Core.fromTemplate(tpl, probe, 'probe', FIELD_BY_ID).id; } catch { break; }
         if (!id || !nodeById(id)) { start = String(+start + i); break; }
       }
     }
@@ -553,7 +584,7 @@ function templateForm(tpl) {
     const vars = {};
     for (const [k, inp] of inputs) vars[k] = inp.value;
     try {
-      const node = Core.fromTemplate(tpl, vars, 'template');
+      const node = Core.fromTemplate(tpl, vars, 'template', FIELD_BY_ID);
       preview.textContent = Core.emit(Core.canonical({ nodes: [node], links: [] }));
       // say so before the click, not after it fails
       let msg = '';
@@ -571,7 +602,7 @@ function templateForm(tpl) {
   const create = () => {
     const vars = {};
     for (const [k, inp] of inputs) vars[k] = inp.value;
-    const node = Core.fromTemplate(tpl, vars, S.name);
+    const node = Core.fromTemplate(tpl, vars, S.name, FIELD_BY_ID);
     if (!node.id) { alertDlg('Cannot create', 'The template produced an empty id.'); return; }
     if (nodeById(node.id)) { alertDlg('Cannot create', `"${node.id}" already exists.`); return; }
     closeDlg();
@@ -1511,6 +1542,13 @@ function renderNode(v, ix, n) {
           refLink(Core.peerOf(l, ref)), ' ',
           el('button', { title: 'unplug just this cable', onclick: () => removeLink(l) }, 'unplug')));
       }
+      if (p.reserved && !cables.length) {
+        // Kept free on purpose. Say so where the port's state is shown, or the
+        // note only exists in the file and the report, and gets forgotten.
+        statusCell.append(el('div', {},
+          el('span', { class: 'chip', title: 'kept free on purpose' }, 'reserved'), ' ',
+          el('span', { class: 'faint' }, p.reserved)));
+      }
       if (blocked && !cables.length) {
         statusCell.append(el('span', { class: 'chip blocked' }, 'blocked'), ' ',
           el('span', { class: 'faint' }, 'by '), refLink(blocked.a), el('span', { class: 'faint' }, ' ↔ '), refLink(blocked.b));
@@ -1531,6 +1569,7 @@ function renderNode(v, ix, n) {
       if (p.untagged) extras.push('vlan ' + p.untagged);
       if ((p.tagged || []).length) extras.push(`+${p.tagged.length} tagged`);
       if (p.fanout > 1) extras.push('fanout ' + p.fanout);
+      if (p.reserved) extras.push('reserved');
       if (p.meta) extras.push('meta');
 
       const idCell = el('input', { value: p.id, style: 'width:70px' });
@@ -1599,11 +1638,15 @@ function renderNode(v, ix, n) {
           field('untagged vlan', vlanPicker(p, 'untagged')),
           field('tagged vlans', vlanPicker(p, 'tagged')),
           field('fanout', numIn(p, 'fanout', 70)),
+          field('reserved for', inline(p, 'reserved', 300)),
           field('note', inline(p, 'note', 300)),
         ),
-        el('div', { class: 'hint' },
+        rawHint(
           'mac and ips belong here rather than on the device, since a multi-NIC box has one of each per port. ' +
-          'fanout above 1 lets this port carry that many cables, for a splitter you would rather not model as a node.' + vlanNote),
+          'fanout above 1 lets this port carry that many cables, for a splitter you would rather not model as a node. ' +
+          '<b>reserved for</b> is why you are keeping this port empty on purpose, such as "second NAS uplink". ' +
+          'It stays connectable and still counts as free; it just records the intent, so that a later you does not ' +
+          'quietly use it for something else.' + vlanNote),
         el('div', { class: 'faint', style: 'margin:6px 0 2px' }, 'port meta'),
         metaEditor(p, 'pluggable')));
       return [main, detail];
@@ -1877,7 +1920,9 @@ function renderCables(v, ix) {
   v.append(rawHint(
     'One row per physical cable. <b>label</b> is the tag on the cable itself, so put it here rather than on both ports where it ' +
     'would drift. <b>poe</b> marks an ethernet run that also carries power, which is how "what feeds the AP" stays answerable. ' +
-    '<b>blocks</b> lists sockets this connection makes unusable, typically a brick overhanging its neighbour.'));
+    '<b>planned</b> is a cable you intend to run but have not: it stays in the file as a reminder without occupying either port, ' +
+    'so both ends still count as free. <b>blocks</b> lists sockets this connection makes unusable, typically a brick ' +
+    'overhanging its neighbour.'));
   if (!S.inv.links.length) { v.append(el('div', { class: 'empty' }, 'None yet.')); return; }
   const rows = S.inv.links
     .slice()
@@ -1886,10 +1931,17 @@ function renderCables(v, ix) {
       const poe = el('input', { type: 'checkbox' });
       poe.checked = l.poe;
       poe.onchange = () => { l.poe = poe.checked; touched(); };
-      return el('tr', {},
+      // `planned` was honoured by the validator and by `inv free`, which skips
+      // planned cables when counting capacity, but there was no way to set it
+      // from the editor at all: you had to hand-edit the YAML.
+      const planned = el('input', { type: 'checkbox', title: 'intended, not run yet' });
+      planned.checked = l.planned;
+      planned.onchange = () => { l.planned = planned.checked; touched(); };
+      return el('tr', { style: l.planned ? 'opacity:.72' : '' },
         el('td', {}, l.a), el('td', {}, l.b),
         el('td', {}, inline(l, 'label', 110)),
         el('td', {}, poe),
+        el('td', {}, planned),
         el('td', {}, el('button', { onclick: () => blocksEditor(l) }, `blocks (${l.blocks.length})`)),
         el('td', {}, inline(l, 'note', 170)),
         el('td', { class: 'right' }, el('button', {
@@ -1899,7 +1951,7 @@ function renderCables(v, ix) {
       );
     });
   v.append(el('table', {},
-    el('thead', {}, el('tr', {}, ...['a', 'b', 'label', 'poe', 'blocks', 'note', ''].map(h => el('th', {}, h)))),
+    el('thead', {}, el('tr', {}, ...['a', 'b', 'label', 'poe', 'planned', 'blocks', 'note', ''].map(h => el('th', {}, h)))),
     el('tbody', {}, ...rows)));
 }
 
@@ -1950,7 +2002,7 @@ function renderYaml(v) {
   try { text = currentYaml(); }
   catch (e) { v.append(el('div', { class: 'prob e' }, String(e.message || e))); return; }
   v.append(el('div', { style: 'margin:8px 0' },
-    el('button', { onclick: () => { navigator.clipboard?.writeText(text); toast('copied'); } }, 'copy')));
+    el('button', { onclick: () => copyText(text, 'copied', 'Copy this YAML') }, 'copy')));
   v.append(el('pre', { style: 'white-space:pre-wrap;background:var(--panel);padding:10px;border:1px solid var(--line);border-radius:6px' }, text));
 }
 
@@ -2067,8 +2119,8 @@ function renderTree(v, ix) {
     return bits;
   };
 
-  const walk = (parent, depth) => {
-    for (const n of (kids.get(parent) || [])) {
+  const rowFor = (n, depth, into) => {
+      const dest = into || box;
       shown++;
       const children = kids.get(n.id) || [];
       const open = !S.collapsed.has(n.id);
@@ -2091,12 +2143,47 @@ function renderTree(v, ix) {
       if (n.virtual) row.append(el('span', { class: 'chip', title: 'no physical presence' }, 'virtual'));
       const bits = summarise(n);
       if (bits.length) row.append(el('span', { class: 'faint' }, bits.join(' · ')));
-      box.append(row);
-      if (open) walk(n.id, depth + 1);
+      dest.append(row);
+      return open;
+  };
+
+  // Guarded by node identity, not by id: ids can be duplicated, and a node whose
+  // id is the empty string lands in its own child list because '' is also the
+  // root sentinel. That recursed until the stack blew, and a file as small as
+  // `nodes: {}` was enough to do it.
+  const drawn = new Set();
+  const walk = (parent, depth) => {
+    for (const n of (kids.get(parent) || [])) {
+      if (drawn.has(n)) continue;
+      drawn.add(n);
+      if (rowFor(n, depth)) walk(n.id, depth + 1);
     }
   };
   walk('', 0);
   v.append(box);
+
+  // Reachability ignoring collapse, so a folded subtree is not mistaken for one
+  // that cannot be reached at all.
+  const reachable = new Set();
+  (function mark(parent) {
+    for (const n of (kids.get(parent) || [])) {
+      if (reachable.has(n)) continue;
+      reachable.add(n);
+      mark(n.id);
+    }
+  })('');
+  const stranded = S.inv.nodes.filter(n => !reachable.has(n));
+  if (stranded.length) {
+    // A parent loop used to make these vanish, with nothing but the "n of m
+    // shown" line to suggest anything was missing.
+    v.append(el('h3', {}, `not reachable from any root (${stranded.length})`));
+    v.append(hint('Each of these sits in a parent loop, so there is no path down to it from a '
+      + 'top-level node. Problems names the loop; clearing one parent puts them back in the tree.'));
+    const loose = el('div', {});
+    v.append(loose);
+    for (const n of stranded) rowFor(n, 0, loose);
+  }
+
   if (!shown) v.append(el('div', { class: 'empty' }, 'Nothing yet.'));
   else v.append(el('div', { class: 'faint', style: 'margin-top:8px' }, `${shown} of ${S.inv.nodes.length} nodes shown`));
 }
@@ -2441,8 +2528,7 @@ $('bSave').onclick = doSave;
 $('bUndo').onclick = doUndo;
 $('bLink').onclick = () => {
   const url = location.href.split('#')[0] + selToHash(S.sel);
-  if (navigator.clipboard) navigator.clipboard.writeText(url).then(() => toast('link copied'));
-  else alertDlg('Link', url);
+  copyText(url, 'link copied', 'Link to this view');
 };
 $('bRedo').onclick = doRedo;
 

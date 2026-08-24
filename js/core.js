@@ -883,10 +883,35 @@ const Core = (() => {
     });
   }
 
-  function fromTemplate(tpl, vars, src) {
+  // `specs` is the id -> field spec map, and is optional. Without it every meta
+  // value a template fills in stays a string, because a placeholder has to be
+  // quoted to be legal YAML: `volts: {{volts}}` is a flow mapping, not a scalar.
+  // Shipped templates were therefore producing `volts: "48"` and `speed: "1"`, so
+  // creating a node from a template immediately reported "should be a number in
+  // V, got 48" against the very templates this repo ships.
+  function fromTemplate(tpl, vars, src, specs) {
     const inv = emptyInv();
     absorb(inv, { nodes: [substitute(tpl.node, vars)] }, src || 'template');
-    return inv.nodes[0];
+    const node = inv.nodes[0];
+    if (specs) {
+      const get = k => (specs.get ? specs.get(k) : specs[k]);
+      const fix = holder => {
+        if (!holder.meta) return;
+        for (const [k, v] of Object.entries(holder.meta)) {
+          const spec = get(k);
+          if (!spec || typeof v !== 'string' || v.trim() === '') continue;
+          if (spec.type !== 'number' && spec.type !== 'integer') continue;
+          // Only a value that is entirely a number. A serial like "0012" must not
+          // silently become 12, and a serial is not a numeric field anyway.
+          if (!/^-?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(v.trim())) continue;
+          const n = Number(v.trim());
+          if (Number.isFinite(n)) holder.meta[k] = spec.type === 'integer' ? Math.trunc(n) : n;
+        }
+      };
+      fix(node);
+      for (const p of node.pluggables) fix(p);
+    }
+    return node;
   }
 
   // Turn a node you already built into a template, pulling a trailing number

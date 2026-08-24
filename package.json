@@ -7,7 +7,8 @@
     "test:core": "node test/core.test.mjs",
     "test:ui": "node test/ui.test.mjs",
     "test:browser": "node test/browser.test.mjs",
-    "test:sweep": "node test/sweep.mjs"
+    "test:sweep": "node test/sweep.mjs",
+    "explore": "node test/explore.mjs --keep-going"
   },
   "devDependencies": {
     "playwright": "^1.62.1"

@@ -31,6 +31,10 @@ run = [
 description = "Real Chromium tests (npm run setup first)"
 run = "node test/browser.test.mjs"
 
+[tasks.explore]
+description = "Exploratory crawler: clicks everything, types hostile values, checks invariants"
+run = "node test/explore.mjs --keep-going"
+
 [tasks.sweep]
 description = "Exhaustive scalar-quoting parity check against `inv fmt`"
 run = "node test/sweep.mjs"

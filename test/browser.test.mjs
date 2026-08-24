@@ -456,6 +456,179 @@ await test('the settings table shows a note column', async () => {
   await page.ctx.close();
 });
 
+/* ------------------------------ found by test/explore.mjs ------------------ */
+// Every case below is a bug the exploratory crawler found by clicking things I
+// had not thought to write a test for.
+
+await test('copy falls back to a dialog when the clipboard is refused', async () => {
+  const page = await open();
+  await load(page);
+  // deny it the way a non-secure context does
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      get: () => ({ writeText: () => Promise.reject(new Error('denied')) }),
+    });
+  });
+  await nav(page, 'YAML');
+  await page.click('#view button:text-is("copy")');
+  await page.waitForTimeout(80);
+
+  // it must not claim success, and must give the text to copy by hand
+  const dlg = await page.textContent('#dlgBody');
+  assert.match(dlg, /refused clipboard access/, 'no fallback offered: ' + dlg.slice(0, 120));
+  const ta = page.locator('#dlgBody textarea');
+  assert.equal(await ta.count(), 1, 'the text was not offered for manual copying');
+  assert.match(await ta.inputValue(), /^nodes:/m, 'the fallback textarea is not the yaml');
+  noErrs(page);   // and the rejection must not surface as an uncaught error
+  await page.ctx.close();
+});
+
+await test('a port can be marked reserved from the editor', async () => {
+  const page = await open();
+  await load(page);
+  await page.evaluate(() => {
+    S.sel = { kind: 'node', id: 'compute/srv-1' };
+    S.openPorts = new Set(['compute/srv-1:eth1']);
+    render();
+  });
+  const inp = page.locator('#view .grid2 input').nth(0);
+  await inp.waitFor({ timeout: 3000 });
+  // find the reserved input by its label
+  const res = page.locator('#view label:text-is("reserved for") + input');
+  assert.equal(await res.count(), 1, 'there is no reserved control in the port editor');
+  await res.fill('second NAS uplink');
+  await res.dispatchEvent('change');
+  await page.waitForTimeout(60);
+
+  const yaml = await page.evaluate(() => currentYaml());
+  assert.match(yaml, /reserved: second NAS uplink/, 'reserved did not reach the file');
+  // and it must be visible without opening the detail row
+  await page.evaluate(() => { S.openPorts = new Set(); render(); });
+  assert.match(await page.textContent('#view'), /reserved/, 'reserved is invisible in the port list');
+  await page.ctx.close();
+});
+
+await test('reserved is a string, and a boolean does not brick saving', async () => {
+  const page = await open();
+  await load(page);
+  // reserved is the reason a port is kept free. Whatever ends up in it, the file
+  // must still be saveable: an unsaveable document has no way out for the user.
+  for (const v of ['why not', '', 'true']) {
+    const err = await page.evaluate(val => {
+      S.inv.nodes.find(n => n.pluggables.length).pluggables[0].reserved = val;
+      try { currentYaml(); return null; } catch (e) { return String(e.message || e); }
+    }, v);
+    assert.equal(err, null, `reserved=${JSON.stringify(v)} made the document unsaveable: ${err}`);
+  }
+  await page.ctx.close();
+});
+
+await test('a cable can be marked planned from the editor', async () => {
+  const page = await open();
+  await load(page);
+  await nav(page, 'Cables');
+  const heads = await page.locator('#view th').allTextContents();
+  assert.ok(heads.includes('planned'), 'no planned column: ' + heads.join(','));
+
+  // the table is sorted by endpoint, so read which cable the first row IS rather
+  // than assuming it is S.inv.links[0]
+  const row0 = page.locator('#view tbody tr').first();
+  const ref = (await row0.locator('td').first().textContent()).trim();
+  assert.ok(ref.includes(':'), 'could not read the first row endpoint: ' + ref);
+
+  await row0.locator('input[type=checkbox]').nth(1).check();
+  await page.waitForTimeout(60);
+
+  const got = await page.evaluate(r => {
+    const l = S.inv.links.find(x => x.a === r || x.b === r);
+    return { planned: !!(l && l.planned), occupied: Core.index(S.inv).usedBy.has(r) };
+  }, ref);
+  assert.equal(got.planned, true, 'planned did not take');
+  assert.match(await page.evaluate(() => currentYaml()), /planned: true/, 'planned did not reach the file');
+  // a planned cable must not occupy its ports: that is the whole point of it
+  assert.equal(got.occupied, false, 'a planned cable still occupies its port');
+  await page.ctx.close();
+});
+
+await test('every shipped template produces a valid node', async () => {
+  const page = await open();
+  await load(page);
+  // A template that writes "48" into a volts field means the shipped templates
+  // fail this repo's own validator the moment you use one.
+  const bad = await page.evaluate(() => {
+    const out = [];
+    for (const t of TPLS) {
+      const vars = {};
+      for (const v of t.vars) vars[v.name] = v.default || '1';
+      let node;
+      try { node = Core.fromTemplate(t, vars, 'x.yaml', FIELD_BY_ID); }
+      catch (e) { out.push(t.id + ': threw ' + e.message); continue; }
+      if (!node.id || node.id.includes('{{')) { out.push(t.id + ': bad id ' + node.id); continue; }
+      const probs = Core.validate({ ...Core.parse('nodes: []\n'), nodes: [node] }, FIELD_BY_ID)
+        .filter(p => !p.warn);
+      for (const p of probs) out.push(t.id + ': ' + p.msg);
+    }
+    return out;
+  });
+  assert.deepEqual(bad, [], 'shipped templates produce invalid inventory');
+  await page.ctx.close();
+});
+
+await test('a self-parenting node does not hang the tree', async () => {
+  const page = await open();
+  // `nodes: {}` parses to one node whose id is '' and whose parent is ''. Because
+  // '' is also the root sentinel it became its own child, and the tree recursed
+  // until the stack blew. A four-character file was enough.
+  for (const text of ['nodes: {}\n', 'nodes: [1,2]\n', 'nodes:\n  - {id: "", parent: ""}\n']) {
+    const err = await page.evaluate(y => {
+      try { ingest(y, 'bad.yaml'); } catch (e) { return 'ingest: ' + e.message; }
+      try { S.sel = { kind: 'view', id: 'tree' }; render(); return null; }
+      catch (e) { return 'render: ' + String(e.message).split('\n')[0]; }
+    }, text);
+    assert.equal(err, null, `${JSON.stringify(text)} broke the tree: ${err}`);
+  }
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('a node in a parent loop is listed, not silently dropped', async () => {
+  const page = await open();
+  await page.evaluate(() => {
+    ingest('nodes:\n  - {id: a, parent: b}\n  - {id: b, parent: a}\n  - {id: c}\n', 'x.yaml');
+    S.sel = { kind: 'view', id: 'tree' };
+    render();
+  });
+  const text = await page.textContent('#view');
+  assert.match(text, /not reachable from any root \(2\)/,
+    'nodes in a parent loop vanished from the tree with no explanation');
+  // and Problems must name the loop
+  await page.evaluate(() => { S.sel = { kind: 'view', id: 'problems' }; render(); });
+  assert.match(await page.textContent('#view'), /loop|cycle/i, 'Problems does not report the loop');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('the toolbar wraps instead of clipping the window', async () => {
+  const ctx = await browser.newContext({ viewport: { width: 420, height: 800 } });
+  const page = await ctx.newPage();
+  const errs = [];
+  page.on('pageerror', e => errs.push(e.message));
+  await page.addInitScript(() => { delete window.showOpenFilePicker; });
+  await page.goto(base + 'index.html');
+  await page.waitForSelector('#nav .row');
+  await page.evaluate(y => ingest(y, 'x.yaml'),
+    fs.readFileSync(path.join(root, 'inventory.example.yaml'), 'utf8'));
+  for (const v of ['problems', 'free', 'cables', 'tree', 'graph', 'vlans', 'yaml', 'settings']) {
+    await page.evaluate(i => { S.sel = { kind: 'view', id: i }; render(); }, v);
+    const over = await page.evaluate(() => document.body.scrollWidth - document.body.clientWidth);
+    // body is overflow:hidden, so anything past the edge is unreachable, not scrollable
+    assert.ok(over <= 4, `view ${v} clips ${over}px off the right edge at 420px wide`);
+  }
+  assert.deepEqual(errs, []);
+  await ctx.close();
+});
+
 /* --------------------------------------------------------- readability ----- */
 
 await test('tree never prints a literal null', async () => {

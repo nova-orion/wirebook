@@ -26,7 +26,10 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); bo
 .btn-primary { background: #24405f; border-color: #34567d; }
 
 header {
-  display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+  /* wrap is load bearing: the toolbar's 546px minimum width used to force the
+     whole body wider than a narrow window, and because body is overflow:hidden
+     that surplus was clipped and unreachable rather than merely scrolled. */
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 7px 10px;
   background: var(--panel); border-bottom: 1px solid var(--line);
 }
 header .brand { font-weight: 600; letter-spacing: .5px; margin-right: 4px; }

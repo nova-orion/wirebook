@@ -27,6 +27,7 @@ A physical inventory of hardware and the cables between it. Two artifacts:
 | `test/core.test.mjs` | Unit tests for the model. No DOM. |
 | `test/ui.test.mjs` | `app.js` against a stubbed DOM. Catches crashes, nothing visual. |
 | `test/browser.test.mjs` | Real Chromium. Required for anything a user can see. |
+| `test/explore.mjs` | Exploratory crawler. Finds the cases nobody wrote a test for. |
 | `test/sweep.mjs` | Emitter parity enforcement. Run it after any emitter change. |
 
 **Classic scripts, not ES modules, and the settings payload is inline rather
@@ -245,6 +246,42 @@ Two traps that made browser tests pass while proving nothing:
 Meta rows carry `class="metarow"` and `data-key`, and views are addressable by
 `#nav .row`, so tests can target one control exactly instead of guessing at
 label text. Keep those hooks.
+
+### Check that a new test fails without the fix
+
+Write the test, revert the fix, watch it go red, restore the fix. Skipping this
+step has produced tests that could never fail: one asserted `#view` was
+non-empty, which the broken build satisfied with a single line of prose, and
+another asserted on a helper defined inside the test file rather than on the
+app's code path. A test that cannot fail is worse than no test, because it
+reports coverage that is not there. If it cannot be made to fail, delete it.
+
+### The exploratory crawler
+
+```sh
+node test/explore.mjs --keep-going                # one pass
+node test/explore.mjs --seed 42 --rounds 3        # replayable random walk
+```
+
+It walks every view and node, clicks every button, types ~45 hostile values into
+every input, loads two dozen malformed files, applies every template, and after
+each action asserts: no uncaught error, `currentYaml()` still works, the document
+round trips byte for byte, no cable disappeared, the pane is not empty. Then it
+checks a 420px viewport and the contrast of every distinct text colour.
+
+It is not in CI, because it is slow and its job is to surface the unknown rather
+than guard the known. **Findings get promoted into `browser.test.mjs` as named
+cases.** The first run produced 65 reports: 6 real bugs, the rest my own harness
+being wrong. Both halves were worth having, but expect to spend real effort
+telling them apart, and fix the harness when it cries wolf.
+
+Two traps it fell into, worth not repeating:
+- `page.evaluate(cb)` runs `cb` **in the page**. A variable from the Node side is
+  not in scope there; pass it as the second argument or you get a ReferenceError
+  that looks like an app bug.
+- The app's own model contracts matter. `reserved` is a *string*, the reason a
+  port is kept free, not a boolean. Setting it to `true` produced 22 identical
+  "output describes a different graph" reports that were entirely my fault.
 
 Network is restricted here: Go module fetches need `GOPROXY=off` against the
 local module cache. `gopkg.in/yaml.v3` is the only dependency and it is cached.
