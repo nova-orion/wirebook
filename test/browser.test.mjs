@@ -437,8 +437,10 @@ await test('an existing custom field can be edited to add a note', async () => {
   await r.waitFor({ timeout: 3000 });
   await r.locator('button:text-is("edit")').click();
   await page.waitForSelector('#dlgBody textarea');
+  // editing an existing field says Save, not Declare
+  assert.equal(await page.textContent('#dlgHead'), 'Edit field');
   await page.fill('#dlgBody textarea', 'Added later.');
-  await page.click('#dlgFoot button:text-is("Declare")');
+  await page.click('#dlgFoot button:text-is("Save")');
   await page.waitForTimeout(80);
 
   const desc = await page.evaluate(() => (FIELD_BY_ID.get('shelf_note') || {}).description);
@@ -492,10 +494,9 @@ await test('a port can be marked reserved from the editor', async () => {
     S.openPorts = new Set(['compute/srv-1:eth1']);
     render();
   });
-  const inp = page.locator('#view .grid2 input').nth(0);
-  await inp.waitFor({ timeout: 3000 });
-  // find the reserved input by its label
-  const res = page.locator('#view label:text-is("reserved for") + input');
+  // the control now sits in a wrapper div alongside its help line, so the
+  // label's sibling is that div rather than the input itself
+  const res = page.locator('#view label:text-is("reserved for") + div input');
   assert.equal(await res.count(), 1, 'there is no reserved control in the port editor');
   await res.fill('second NAS uplink');
   await res.dispatchEvent('change');
@@ -572,6 +573,185 @@ await test('every shipped template produces a valid node', async () => {
     return out;
   });
   assert.deepEqual(bad, [], 'shipped templates produce invalid inventory');
+  await page.ctx.close();
+});
+
+/* ------------------------------------------------ sidebar structure -------- */
+// It used to be one flat list in which app views, the user's inventory and the
+// buttons that create things all had identical weight, and namespace groups from
+// the user's own ids sat at the same level as the chrome headings.
+
+await test('the sidebar separates views, inventory and actions', async () => {
+  const page = await open();
+  await load(page);
+  const shape = await page.evaluate(() => ({
+    regions: [...document.querySelectorAll('#nav .navsec')].map(s => ({
+      heading: (s.querySelector('h4') && s.querySelector('h4').textContent || '').trim(),
+      rows: s.querySelectorAll('.row').length,
+      subs: s.querySelectorAll('h5').length,
+      btns: s.querySelectorAll('.navbtn').length,
+      borderTop: getComputedStyle(s).borderTopWidth,
+    })),
+    // an action must not be a row: that was the whole complaint
+    actionRows: [...document.querySelectorAll('#nav .row')]
+      .filter(r => /^\+/.test((r.textContent || '').trim())).length,
+  }));
+  assert.ok(shape.regions.length >= 3, 'expected at least three regions, saw ' + shape.regions.length);
+  assert.equal(shape.actionRows, 0, 'a create action is still rendered as a plain nav row');
+
+  const inv = shape.regions.find(r => /Inventory/i.test(r.heading));
+  assert.ok(inv, 'no Inventory region: ' + JSON.stringify(shape.regions.map(r => r.heading)));
+  assert.ok(inv.subs > 0, 'namespace groups are not sub-headings inside Inventory');
+
+  const acts = shape.regions.find(r => r.btns > 0);
+  assert.ok(acts && acts.btns >= 3, 'the create actions are not buttons');
+
+  // regions after the first must be visually divided, not just spaced
+  const divided = shape.regions.slice(1).filter(r => parseFloat(r.borderTop) > 0).length;
+  assert.ok(divided >= 2, 'regions have no separator, so the sidebar reads as one flat list');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+/* ------------------------------------------------ contextual help ---------- */
+// All the guidance used to sit in one paragraph at the top of a view, so every
+// individual control was unexplained: nothing said that "unit" wants a symbol or
+// what "composite" does.
+
+await test('every labelled control carries its own help', async () => {
+  const page = await open();
+  await load(page);
+  const places = [
+    ['node detail', () => { S.sel = { kind: 'node', id: 'compute/srv-1' }; render(); }],
+    ['port detail', () => {
+      S.sel = { kind: 'node', id: 'compute/srv-1' };
+      S.openPorts = new Set(['compute/srv-1:eth0']);
+      render();
+    }],
+  ];
+  for (const [where, fn] of places) {
+    await page.evaluate(f => eval('(' + f + ')')(), fn.toString());
+    const rows = await page.evaluate(() => {
+      const out = [];
+      for (const lab of document.querySelectorAll('#view .grid2 > label')) {
+        const control = lab.nextElementSibling;
+        out.push({
+          label: (lab.textContent || '').trim(),
+          tip: (lab.getAttribute('title') || '').trim().length,
+          inline: control ? control.querySelectorAll('.subhelp').length : 0,
+        });
+      }
+      return out;
+    });
+    assert.ok(rows.length >= 5, `${where}: expected several rows, saw ${rows.length}`);
+    const bare = rows.filter(r => !r.tip && !r.inline).map(r => r.label);
+    assert.deepEqual(bare, [], `${where}: these controls have no help at all: ${bare.join(', ')}`);
+  }
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('the declare dialog explains each box and previews the control', async () => {
+  const page = await open();
+  await load(page);
+  await openNodeWithMeta(page);
+  await page.click('#view button:text-is("+ ad hoc key")');
+  await row(page, 'custom').waitFor({ timeout: 3000 });
+  await row(page, 'custom').locator('button:text-is("declare")').click();
+  await page.waitForSelector('#dlgBody .grid2');
+
+  const helps = await page.evaluate(() =>
+    [...document.querySelectorAll('#dlgBody .grid2 > label')].map(l => ({
+      label: (l.textContent || '').trim(),
+      help: (l.nextElementSibling
+        && l.nextElementSibling.querySelector('.subhelp')
+        && l.nextElementSibling.querySelector('.subhelp').textContent || '').trim(),
+    })));
+  assert.ok(helps.length >= 6, 'expected a row per property, saw ' + helps.length);
+  for (const h of helps) assert.ok(h.help.length > 20, `"${h.label}" has no explanation`);
+  // the unit row must say it wants a symbol, which is what a "1" in there means
+  const unit = helps.find(h => h.label === 'unit');
+  assert.match(unit.help, /symbol|V, W/, 'unit does not explain what it wants: ' + unit.help);
+  // and a live preview of the control being defined
+  assert.match(await page.textContent('#dlgBody'), /preview/, 'no preview of the control');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('a composite field cannot be declared with no parts', async () => {
+  const page = await open();
+  await load(page);
+  await openNodeWithMeta(page);
+  await page.click('#view button:text-is("+ ad hoc key")');
+  await row(page, 'custom').waitFor({ timeout: 3000 });
+  await row(page, 'custom').locator('button:text-is("declare")').click();
+  await page.waitForSelector('#dlgBody .grid2');
+
+  await page.fill('#dlgBody .grid2 input >> nth=0', 'box_size');
+  await page.selectOption('#dlgBody select >> nth=0', 'composite');
+  await page.waitForTimeout(60);
+
+  // it must say so inline, and refuse by disabling the button. Raising the
+  // problem after the click is not an option: alertDlg replaces #dlgBody, which
+  // destroyed everything the user had typed.
+  assert.match(await page.textContent('#dlgBody'), /needs at least one part/,
+    'no inline warning that a partless composite renders nothing');
+  const btn = page.locator('#dlgFoot button:text-is("Declare")');
+  assert.equal(await btn.isDisabled(), true, 'Declare is clickable with no parts');
+
+  // adding a part must enable it, keep the form intact, and save the part
+  await page.click('#dlgBody button:text-is("+ part")');
+  const partId = page.locator('#dlgBody input[placeholder^="id, e.g."]').first();
+  await partId.fill('w');
+  await partId.dispatchEvent('change');
+  await page.waitForTimeout(60);
+
+  assert.equal(await page.locator('#dlgBody .grid2 input').first().inputValue(), 'box_size',
+    'the form lost what was typed');
+  assert.equal(await btn.isDisabled(), false, 'Declare still disabled after adding a part');
+  await btn.click();
+  await page.waitForTimeout(80);
+
+  const spec = await page.evaluate(() => {
+    const f = FIELD_BY_ID.get('box_size');
+    return f ? { parts: f.parts.map(q => q.id), control: f.control } : null;
+  });
+  assert.ok(spec, 'the composite was not declared after adding a part');
+  assert.deepEqual(spec.parts, ['w'], 'the part was not saved');
+  assert.equal(spec.control, 'composite');
+  // and the control must now actually render an input
+  const rendered = await page.evaluate(() => {
+    const n = S.inv.nodes.find(x => x.id === 'compute/srv-1');
+    n.meta = { ...(n.meta || {}), box_size: {} };
+    S.sel = { kind: 'node', id: n.id }; render();
+    const r = document.querySelector('#view .metarow[data-key="box_size"]');
+    return r ? r.querySelectorAll('input').length : -1;
+  });
+  assert.ok(rendered > 0, 'the declared composite renders no input at all');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('the wall outlet template makes a usable power source', async () => {
+  const page = await open();
+  await load(page);
+  const got = await page.evaluate(() => {
+    const t = TPLS.find(x => x.id === 'wall-outlet');
+    if (!t) return { missing: true };
+    const vars = {};
+    for (const v of t.vars) vars[v.name] = v.default || '1';
+    const n = Core.fromTemplate(t, vars, 'x.yaml', FIELD_BY_ID);
+    return {
+      id: n.id, type: n.type,
+      outs: n.pluggables.filter(p => p.dir === 'out').length,
+      ins: n.pluggables.filter(p => p.dir === 'in').length,
+      circuit: n.meta && n.meta.circuit,
+    };
+  });
+  assert.ok(!got.missing, 'there is no wall-outlet template');
+  assert.equal(got.ins, 0, 'a wall socket is a source: it must have no inlet');
+  assert.ok(got.outs >= 2, 'a double socket needs two pluggables so one can block the other');
+  assert.ok(got.circuit, 'no circuit placeholder to record the breaker');
   await page.ctx.close();
 });
 
@@ -702,6 +882,67 @@ await test('the diagram starts at the left edge, not centred in blank space', as
   const rect = await page.locator('#view svg rect').first().boundingBox();
   const gap = rect.x - box.x;
   assert.ok(gap < 80, `first node is ${gap.toFixed(0)}px from the left edge; the diagram is being centred`);
+  await page.ctx.close();
+});
+
+await test('the graph draws a child inside its parent', async () => {
+  const page = await open();
+  await load(page);
+  // compute/disk-1 has parent compute/srv-1 in the shipped example, and a guest
+  // is added here because virtual nodes used to be dropped from the graph
+  // entirely, which is precisely where nesting matters most.
+  await page.evaluate(() => {
+    S.inv.nodes.push({
+      id: 'compute/vm-1', label: 'Guest', type: 'vm', virtual: true,
+      parent: 'compute/srv-1', hostname: '', note: '', meta: null, pluggables: [],
+    });
+    S.sel = { kind: 'view', id: 'graph' };
+    render();
+  });
+
+  const boxes = await page.evaluate(() => {
+    const out = {};
+    for (const g of document.querySelectorAll('#view svg g[style*="cursor:pointer"]')) {
+      const t = g.querySelector('text');
+      const r = g.querySelector('rect');
+      if (!t || !r) continue;
+      out[(t.textContent || '').trim()] = {
+        x: +r.getAttribute('x'), y: +r.getAttribute('y'),
+        w: +r.getAttribute('width'), h: +r.getAttribute('height'),
+        dashed: !!r.getAttribute('stroke-dasharray'),
+      };
+    }
+    return out;
+  });
+  const parent = boxes['Mini PC'], disk = boxes['SSD'], guest = boxes['Guest'];
+  assert.ok(parent, 'no parent box: ' + Object.keys(boxes).join(','));
+  assert.ok(disk, 'the child drive is not drawn: ' + Object.keys(boxes).join(','));
+  assert.ok(guest, 'a virtual guest is still missing from the graph');
+
+  for (const [name, kid] of [['drive', disk], ['guest', guest]]) {
+    assert.ok(kid.x > parent.x && kid.x + kid.w <= parent.x + parent.w + 0.5,
+      `${name} is not horizontally inside its parent`);
+    assert.ok(kid.y > parent.y && kid.y + kid.h <= parent.y + parent.h + 0.5,
+      `${name} is not vertically inside its parent: ${JSON.stringify(kid)} vs ${JSON.stringify(parent)}`);
+    assert.ok(kid.w < parent.w, `${name} is not inset, so nesting is invisible`);
+  }
+  assert.equal(guest.dashed, true, 'a guest should be dashed: it has no sockets');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('a parent loop does not hang or hide nodes in the graph', async () => {
+  const page = await open();
+  const err = await page.evaluate(() => {
+    ingest('nodes:\n  - {id: a, parent: b}\n  - {id: b, parent: a}\n', 'x.yaml');
+    try { S.sel = { kind: 'view', id: 'graph' }; render(); } catch (e) { return String(e.message); }
+    return null;
+  });
+  assert.equal(err, null, 'a parent loop broke the graph: ' + err);
+  const rects = await page.evaluate(() =>
+    document.querySelectorAll('#view svg g[style*="cursor:pointer"] rect').length);
+  assert.ok(rects >= 2, 'nodes in a parent loop vanished from the graph');
+  noErrs(page);
   await page.ctx.close();
 });
 

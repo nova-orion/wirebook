@@ -1022,46 +1022,137 @@ function declareField(id, sample, scope, prior) {
     placeholder: 'What this is for, and when to fill it in. Shown as the tooltip on the input.',
   });
   descIn.value = p.description || '';
-  body.append(el('div', { class: 'hint' },
-    'The id is the meta key, so declaring it applies to every place that key is already used. ' +
-    'Units go here, not in the value. The note is for your future self: say what the field means ' +
-    'and when it applies, because a bare label stops being obvious quickly.'),
+
+  // Parts editor. A composite is a value made of several named numbers, such as
+  // dimensions w/h/d. Without this, choosing "composite" produced parts: [] and
+  // the control rendered NOTHING at all: a row you could never type into.
+  let parts = (p.parts || []).map(q => ({ ...q }));
+  let declareBtn = null;      // assigned below; preview() disables it when unusable
+  const partsBox = el('div', {});
+  const paintParts = () => {
+    partsBox.replaceChildren();
+    for (const [i, q] of parts.entries()) {
+      const idI = el('input', { value: q.id || '', placeholder: 'id, e.g. w', style: 'width:90px' });
+      const laI = el('input', { value: q.label || '', placeholder: 'label', style: 'width:110px' });
+      const unI = el('input', { value: q.unit || '', placeholder: 'unit', style: 'width:70px' });
+      const tyI = select(['number', 'integer', 'string'], q.type || 'number', val => { q.type = val; preview(); });
+      idI.onchange = () => { q.id = idI.value.trim(); preview(); };
+      laI.onchange = () => { q.label = laI.value.trim(); preview(); };
+      unI.onchange = () => { q.unit = unI.value.trim(); preview(); };
+      partsBox.append(el('div', { style: 'display:flex;gap:4px;margin-bottom:4px;flex-wrap:wrap' },
+        idI, laI, unI, tyI,
+        el('button', { onclick: () => { parts.splice(i, 1); paintParts(); preview(); } }, '×')));
+    }
+    partsBox.append(el('button', {
+      onclick: () => { parts.push({ id: '', label: '', unit: '', type: 'number' }); paintParts(); preview(); },
+    }, '+ part'));
+  };
+
+  const specNow = () => {
+    const vals = enumIn.value.split(',').map(x => x.trim()).filter(Boolean);
+    const sp = {
+      id: idIn.value.trim(), label: labelIn.value.trim() || idIn.value.trim(),
+      type: typeIn.value, unit: unitIn.value.trim(), enum: vals, open: openIn.checked,
+      min: null, max: null,
+      applies_to: prior ? (prior.applies_to || []) : (scope ? [scope] : []),
+      description: descIn.value.trim(),
+      parts: typeIn.value === 'composite' ? parts.filter(q => q.id) : [],
+      builtin: false,
+    };
+    sp.control = vals.length ? (sp.open ? 'combo' : 'select')
+      : sp.type === 'boolean' ? 'checkbox'
+      : (sp.type === 'number' || sp.type === 'integer') ? 'number'
+      : sp.type === 'composite' ? 'composite' : 'text';
+    return sp;
+  };
+
+  // Showing the actual control answers "what does composite do", "what does
+  // allow off-list change", and "why is my unit not appearing" far better than
+  // any amount of prose above the form.
+  const previewRow = el('div', { style: 'display:flex;gap:6px;align-items:center;min-height:28px' });
+  const problem = el('div', { class: 'prob e', style: 'display:none;margin-top:6px' });
+  const partsRow = el('div', {});
+  const preview = () => {
+    const sp = specNow();
+    partsRow.style.display = sp.type === 'composite' ? '' : 'none';
+    previewRow.replaceChildren();
+    try {
+      previewRow.append(metaControl(sp, blankValue(sp), () => {}));
+      if (sp.unit) previewRow.append(el('span', { class: 'faint' }, sp.unit));
+    } catch (e) { previewRow.append(el('span', { class: 'faint' }, String(e.message || e))); }
+
+    let msg = '';
+    if (!/^[a-z][a-z0-9_]*$/.test(sp.id)) {
+      msg = 'The id must be lowercase letters, digits and underscores, starting with a letter. '
+        + 'It is the key written into your file.';
+    } else if (sp.type === 'composite' && !sp.parts.length) {
+      msg = 'A composite needs at least one part, or this field renders no input at all.';
+    } else if (sp.enum.length && (sp.type === 'number' || sp.type === 'integer')) {
+      msg = 'Options on a numeric field are compared as text, so 2.50 and 2.5 are different entries.';
+    } else if (sp.open && !sp.enum.length) {
+      msg = '"allow off-list" does nothing without options: with none, this is already a free text box.';
+    }
+    problem.textContent = msg;
+    problem.style.display = msg ? '' : 'none';
+    // Disable rather than alert. alertDlg replaces #dlgBody, so raising the
+    // problem after the click destroyed every box the user had just filled in.
+    // Only the first two messages are fatal; the rest are advice.
+    const fatal = !/^[a-z][a-z0-9_]*$/.test(sp.id)
+      || (sp.type === 'composite' && !sp.parts.length);
+    if (declareBtn) declareBtn.disabled = fatal;
+  };
+  for (const inp of [idIn, labelIn, unitIn, enumIn, descIn]) inp.oninput = preview;
+  typeIn.onchange = preview;
+  openIn.onchange = preview;
+  paintParts();
+
+  body.append(
+    el('div', { class: 'hint' },
+      'A field spec turns a bare meta key into a typed input with a unit and, if you want, a fixed list of choices. '
+      + 'It is stored in your inventory file, so it travels with the data.'),
     el('div', { class: 'grid2' },
-      el('label', {}, 'id'), idIn,
-      el('label', {}, 'label'), labelIn,
-      el('label', {}, 'type'), typeIn,
-      el('label', {}, 'unit'), unitIn,
-      el('label', {}, 'options'), enumIn,
-      el('label', {}, 'allow off-list'), openIn,
-      el('label', {}, 'note'), descIn));
-  $('dlgFoot').replaceChildren(
-    el('button', {
-      class: 'btn-primary',
-      onclick: () => {
-        const fid = idIn.value.trim();
-        if (!/^[a-z][a-z0-9_]*$/.test(fid)) {
-          alertDlg('Not a valid id', 'Lowercase letters, digits and underscores, starting with a letter.');
-          return;
-        }
-        const vals = enumIn.value.split(',').map(x => x.trim()).filter(Boolean);
-        const spec = {
-          id: fid, label: labelIn.value.trim() || fid, type: typeIn.value,
-          unit: unitIn.value.trim(), enum: vals, open: openIn.checked,
-          min: null, max: null,
-          applies_to: prior ? (prior.applies_to || []) : (scope ? [scope] : []),
-          description: descIn.value.trim(), parts: prior ? (prior.parts || []) : [],
-          builtin: false,
-        };
-        spec.control = vals.length ? (spec.open ? 'combo' : 'select')
-          : spec.type === 'boolean' ? 'checkbox'
-          : (spec.type === 'number' || spec.type === 'integer') ? 'number'
-          : spec.type === 'composite' ? 'composite' : 'text';
-        S.inv.fields = [...(S.inv.fields || []).filter(f => f.id !== fid), spec];
-        refreshFields();
-        closeDlg(); touched(); toast('field declared, saved with your inventory');
-      },
-    }, 'Declare'),
-    el('button', { onclick: closeDlg }, 'Cancel'));
+      field('id', idIn,
+        'The meta key itself, written into your file. Declaring it applies to every place that key is '
+        + 'already used, so no migration is needed.'),
+      field('label', labelIn, 'What the form calls it. Cosmetic; change it whenever.'),
+      field('type', typeIn,
+        'string is free text. number and integer keep the value sortable and comparable. boolean is a '
+        + 'checkbox. composite is several named numbers in one value, like width/height/depth.'),
+      field('unit', unitIn,
+        'The unit the value is stored in, as a symbol: V, W, A, GB, gbps. It is shown next to the input '
+        + 'and never written into the value, so 2.5 stays a number instead of becoming "2.5 gbps".'),
+      field('options', enumIn,
+        'Comma separated. Give a list and the input becomes a dropdown. Leave empty for a plain box.'),
+      field('allow off-list', openIn,
+        'Only matters with options. Ticked, the dropdown also lets you type a value that is not listed.'),
+      field('note', descIn,
+        'For your future self: what this means and when it applies. Shown as the tooltip on the input '
+        + 'and in the fields table.'),
+    ),
+    partsRow);
+  partsRow.append(
+    el('div', { class: 'faint', style: 'margin:8px 0 4px' }, 'parts'),
+    el('div', { class: 'subhelp' },
+      'One row per component: id, label, unit, type. A dimensions field would have w, h and d in mm.'),
+    partsBox);
+  body.append(
+    el('div', { class: 'faint', style: 'margin:10px 0 4px' }, 'preview'),
+    previewRow,
+    problem);
+
+  declareBtn = el('button', {
+    class: 'btn-primary',
+    onclick: () => {
+      // Nothing is validated here: the button stays disabled while the spec is
+      // unusable, and the reason sits inline under the preview.
+      const spec = specNow();
+      S.inv.fields = [...(S.inv.fields || []).filter(f => f.id !== spec.id), spec];
+      refreshFields();
+      closeDlg(); touched(); toast('field declared, saved with your inventory');
+    },
+  }, prior ? 'Save' : 'Declare');
+  $('dlgFoot').replaceChildren(declareBtn, el('button', { onclick: closeDlg }, 'Cancel'));
+  preview();            // after declareBtn exists, so it can set disabled
   openDlg();
 }
 
@@ -1312,56 +1403,81 @@ function renderNav(ix) {
       p.id.toLowerCase().includes(q));
   };
 
-  nav.append(el('h4', {}, 'Views'));
-  nav.append(navRow('Problems', { kind: 'view', id: 'problems' }));
-  nav.append(navRow('Free ports', { kind: 'view', id: 'free' }));
-  nav.append(navRow('Cables', { kind: 'view', id: 'cables' }, S.inv.links.length));
-  nav.append(navRow('Tree', { kind: 'view', id: 'tree' }));
-  nav.append(navRow('Graph', { kind: 'view', id: 'graph' }));
-  nav.append(navRow('VLANs', { kind: 'view', id: 'vlans' }, S.inv.vlans.length || null));
-  nav.append(navRow('YAML', { kind: 'view', id: 'yaml' }));
+  // Three regions, deliberately unlike each other. Before this the sidebar was
+  // one flat list in which app views, your inventory and the buttons that create
+  // things all had identical weight, and the namespace groups taken from your
+  // own ids (compute, net, misc) sat at the same level as the chrome headings.
+  // "+ Node" looked exactly like a node.
+  // `tally` goes in through here rather than being fished back out with
+  // querySelector: re-finding an element you just built is fragile, and it
+  // returned null outright under the stubbed DOM the smoke tests use.
+  const region = (title, cls, tally) => {
+    const box = el('div', { class: 'navsec ' + (cls || '') });
+    if (title) {
+      box.append(el('h4', {}, title,
+        tally == null ? null : el('span', { class: 'tally' }, String(tally))));
+    }
+    nav.append(box);
+    return box;
+  };
 
-  // location tree, any depth
+  const views = region('Views');
+  views.append(navRow('Problems', { kind: 'view', id: 'problems' }));
+  views.append(navRow('Free ports', { kind: 'view', id: 'free' }));
+  views.append(navRow('Cables', { kind: 'view', id: 'cables' }, S.inv.links.length));
+  views.append(navRow('Tree', { kind: 'view', id: 'tree' }));
+  views.append(navRow('Graph', { kind: 'view', id: 'graph' }));
+  views.append(navRow('VLANs', { kind: 'view', id: 'vlans' }, S.inv.vlans.length || null));
+  views.append(navRow('YAML', { kind: 'view', id: 'yaml' }));
+  views.append(navRow('Settings', { kind: 'view', id: 'settings' }, FIELDS.length + TPLS.length));
+
+  // ---- inventory: one region, with the namespace groups as sub-headings so it
+  // reads as your data rather than as more application chrome
   const locs = S.inv.nodes.filter(n => n.type === 'location' && (!q || hit(n) ||
     S.inv.nodes.some(x => x.parent === n.id && hit(x))));
-  if (locs.length) {
-    nav.append(el('h4', {}, 'Locations'));
-    const byId = new Map(locs.map(l => [l.id, l]));
-    const walk = (parent, depth) => {
-      for (const l of locs.filter(x => (byId.has(x.parent) ? x.parent : '') === parent)) {
-        const inside = S.inv.nodes.filter(n => n.parent === l.id && n.type !== 'location').length;
-        nav.append(navRow(l.label || l.id, { kind: 'node', id: l.id }, inside || null, depth, '▪'));
-        walk(l.id, depth + 1);
-      }
-    };
-    walk('', 0);
-  }
-
-  // everything else, grouped by namespace prefix
   const groups = new Map();
   for (const n of S.inv.nodes) {
     if (n.type === 'location' || !hit(n)) continue;
-    const ns = n.id.includes('/') ? n.id.slice(0, n.id.indexOf('/')) : '(none)';
+    const ns = n.id.includes('/') ? n.id.slice(0, n.id.indexOf('/')) : 'ungrouped';
     if (!groups.has(ns)) groups.set(ns, []);
     groups.get(ns).push(n);
   }
-  for (const ns of [...groups.keys()].sort()) {
-    nav.append(el('h4', {}, ns));
-    for (const n of groups.get(ns).sort((a, b) => a.id < b.id ? -1 : 1)) {
-      nav.append(navRow(n.label || n.id, { kind: 'node', id: n.id }, n.pluggables.length || null, 0));
+  const total = S.inv.nodes.filter(hit).length;
+
+  if (locs.length || groups.size) {
+    const inv = region('Inventory', 'navinv', total);
+
+    if (locs.length) {
+      inv.append(el('h5', {}, 'places'));
+      const byId = new Map(locs.map(l => [l.id, l]));
+      const walk = (parent, depth) => {
+        for (const l of locs.filter(x => (byId.has(x.parent) ? x.parent : '') === parent)) {
+          const inside = S.inv.nodes.filter(n => n.parent === l.id && n.type !== 'location').length;
+          inv.append(navRow(l.label || l.id, { kind: 'node', id: l.id }, inside || null, depth, '▪'));
+          walk(l.id, depth + 1);
+        }
+      };
+      walk('', 0);
     }
+    for (const ns of [...groups.keys()].sort()) {
+      inv.append(el('h5', {}, ns));
+      for (const n of groups.get(ns).sort((a, b) => a.id < b.id ? -1 : 1)) {
+        inv.append(navRow(n.label || n.id, { kind: 'node', id: n.id }, n.pluggables.length || null, 0));
+      }
+    }
+  } else if (q) {
+    const inv = region('Inventory', 'navinv');
+    inv.append(el('div', { class: 'navnote' }, 'Nothing matches "' + S.navQ + '".'));
   }
 
-  nav.append(el('h4', {}, 'Settings'));
-  nav.append(navRow('Settings', { kind: 'view', id: 'settings' }, FIELDS.length + TPLS.length));
-  nav.append(el('div', { class: 'row', onclick: pickTemplate },
-    el('span', { class: 'tw' }, '+'), el('span', { class: 'lbl' }, 'New from template')));
-
-  nav.append(el('h4', {}, 'Add'));
-  nav.append(el('div', { class: 'row', onclick: () => addNode('device') },
-    el('span', { class: 'tw' }, '+'), el('span', { class: 'lbl' }, 'Node')));
-  nav.append(el('div', { class: 'row', onclick: () => addNode('location') },
-    el('span', { class: 'tw' }, '+'), el('span', { class: 'lbl' }, 'Location')));
+  // ---- actions: buttons, at the bottom, not list rows
+  const add = region(null, 'navadd');
+  const action = (label, fn, title) => el('button', { class: 'navbtn', title: title || '', onclick: fn },
+    el('span', { class: 'plus' }, '+'), label);
+  add.append(el('div', { class: 'navbtns' },
+    action('Node', () => addNode('device'), 'An empty device you fill in by hand'),
+    action('Location', () => addNode('location'), 'A room, rack or shelf that other things sit in'),
+    action('From template', pickTemplate, 'A pre-shaped node: a switch, PSU, PDU, wall outlet and so on')));
 }
 
 function renderView(ix, probs) {
@@ -1456,10 +1572,20 @@ function typeInput(n) {
   return i;
 }
 
-function field(label, input) {
+// A labelled row for .grid2. `help` is a one-line explanation shown under the
+// control, not only as a tooltip: all the guidance used to sit in one paragraph
+// at the top of a view, which left every individual box unexplained and meant
+// nobody could tell what "unit" or "composite" wanted.
+//
+// Returns exactly two children, because .grid2 is a two-column grid.
+function field(label, input, help) {
   const id = 'f' + (++fieldSeq);
   if (!input.id) input.id = id;
-  return [el('label', { for: input.id }, label), input];
+  const lab = el('label', { for: input.id, title: help || '' }, label);
+  if (!help) return [lab, input];
+  return [lab, el('div', {},
+    input,
+    el('div', { class: 'subhelp' }, help))];
 }
 // Text by default. rawHint is for the handful of literal constants that want
 // <b> and <code>; keeping them separate means no future edit can accidentally
@@ -1498,15 +1624,26 @@ function renderNode(v, ix, n) {
   };
 
   v.append(el('div', { class: 'grid2' },
-    field('id', idIn),
-    field('label', bind(n, 'label')),
-    field('type', typeInput(n)),
-    field('virtual', virtualToggle(n)),
-    field('hostname', bind(n, 'hostname')),
+    field('id', idIn,
+      'How cables refer to this thing, so renaming it here rewrites every reference. '
+      + 'Lowercase, and / to namespace, as in power/ups-1.'),
+    field('label', bind(n, 'label'),
+      'The human name, shown everywhere in place of the id. Change it freely; nothing points at it.'),
+    field('type', typeInput(n),
+      'What kind of thing this is. It only groups the sidebar and picks the icon in reports, '
+      + 'so pick the nearest and move on. Use location for a room, rack or shelf.'),
+    field('virtual', virtualToggle(n),
+      'A VM or container: it nests under the host it runs on so you can see what dies with that host, '
+      + 'but it is left out of the free-port report and the graph, because it has no sockets to plug into.'),
+    field('hostname', bind(n, 'hostname'),
+      'What the machine calls itself. Names it has in other systems, such as a cluster node name, '
+      + 'belong in whatever sets them, not here.'),
     field('parent', select(parents, n.parent, val => { n.parent = val; touched(); }, id => {
       const p = nodeById(id); return p ? `${p.label || p.id} (${id})` : '(none)';
-    })),
-    field('note', bind(n, 'note')),
+    }), 'What physically contains this: the room for a device, the server for a drive. '
+      + 'This is containment, not cabling.'),
+    field('note', bind(n, 'note'),
+      'Free text for whatever does not fit a field. Anything you want to search for later is better as meta.'),
   ));
 
   v.append(el('h3', {}, 'meta'));
@@ -1633,20 +1770,24 @@ function renderNode(v, ix, n) {
       const vlanNote = S.inv.vlans.length ? '' : ' (define VLANs first in the VLANs view)';
       const detail = el('tr', {}, el('td', { colspan: 7, style: 'padding:8px 0 14px 12px' },
         el('div', { class: 'grid2' },
-          field('mac', inline(p, 'mac', 170)),
-          field('ips', csv(p, 'ips', 260)),
-          field('untagged vlan', vlanPicker(p, 'untagged')),
-          field('tagged vlans', vlanPicker(p, 'tagged')),
-          field('fanout', numIn(p, 'fanout', 70)),
-          field('reserved for', inline(p, 'reserved', 300)),
-          field('note', inline(p, 'note', 300)),
+          field('mac', inline(p, 'mac', 170),
+            'Burned into this port, so it lives here and not on the device: a multi-NIC box has one per port.'),
+          field('ips', csv(p, 'ips', 260),
+            'Comma separated. Only addresses that are pinned to the hardware; anything DHCP hands out belongs '
+            + 'wherever DHCP is configured.'),
+          field('untagged vlan', vlanPicker(p, 'untagged'),
+            'The one VLAN this port carries with no tag, the access VLAN.' + vlanNote),
+          field('tagged vlans', vlanPicker(p, 'tagged'),
+            'VLANs this port carries tagged, on top of the untagged one. A trunk lists several.' + vlanNote),
+          field('fanout', numIn(p, 'fanout', 70),
+            'How many cables this one socket can carry. Leave empty for the normal case of one. '
+            + 'Set 3 when a splitter is plugged in and you would rather not model the splitter as its own node.'),
+          field('reserved for', inline(p, 'reserved', 300),
+            'Why you are keeping this port empty on purpose, such as "second NAS uplink". It stays connectable '
+            + 'and still counts as free; this only records the intent so a later you does not quietly take it.'),
+          field('note', inline(p, 'note', 300),
+            'Anything else about this socket specifically. Notes about the whole device go on the device.'),
         ),
-        rawHint(
-          'mac and ips belong here rather than on the device, since a multi-NIC box has one of each per port. ' +
-          'fanout above 1 lets this port carry that many cables, for a splitter you would rather not model as a node. ' +
-          '<b>reserved for</b> is why you are keeping this port empty on purpose, such as "second NAS uplink". ' +
-          'It stays connectable and still counts as free; it just records the intent, so that a later you does not ' +
-          'quietly use it for something else.' + vlanNote),
         el('div', { class: 'faint', style: 'margin:6px 0 2px' }, 'port meta'),
         metaEditor(p, 'pluggable')));
       return [main, detail];
@@ -2206,12 +2347,16 @@ const svgEl = (tag, attrs = {}, ...kids) => {
 const WIRE = { eth: '#6ea8fe', power: '#f0c674', usb: '#b8a2e3', hdmi: '#5dd39e', dp: '#5dd39e', sata: '#e08a5f', pcie: '#e08a5f' };
 const GFONT = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 const BOX_W = 196, HEAD_H = 24, ROW_H = 15, PAD_Y = 26, COL_GAP = 118;
+// nested children: inset on each side, and the gap above/below the nested block
+const KID_INSET = 10, KID_GAP = 6;
 const BG = '#1b1e24';
 
 function renderGraph(v, ix) {
   v.append(el('h2', {}, 'Graph'));
   v.append(rawHint(
-    'One column per location, nodes stacked inside. Every line is a real cable between two real ports, so a chain like ' +
+    'One column per location. Inside a column, a box drawn <b>inside another box</b> is physically inside it: a drive in ' +
+    'its server, a guest on its host. Guests are dashed, because they have no sockets of their own. Every line is a real ' +
+    'cable between two real ports, so a chain like ' +
     'outlet -> PSU brick -> device reads left to right. Dashed thick lines carry PoE. <b>Drag</b> to pan, ' +
     '<b>ctrl+scroll</b> (or pinch) to zoom toward the pointer, <b>click</b> a node to open it. Zoom needs ctrl held so ' +
     'that a plain scroll still moves the page instead of trapping it here.'));
@@ -2266,19 +2411,67 @@ function renderGraph(v, ix) {
   const links = S.inv.links.filter(l => ix.portByRef.has(l.a) && ix.portByRef.has(l.b) && wanted(l));
   const live = new Set(links.flatMap(l => [l.a, l.b]));
 
+  // Containment, drawn as containment. This used to be one flat stack per
+  // location, so a drive inside a server or a VM on a host appeared as a sibling
+  // box and the parent relation was invisible. Children are now nested inside
+  // their parent's rectangle, at any depth.
+  const kidsOf = new Map();
+  const isNodeParent = n => {
+    const p = ix.nodeById.get(n.parent);
+    return p && p.type !== 'location' ? p : null;
+  };
+  for (const n of S.inv.nodes) {
+    if (n.type === 'location') continue;
+    const p = isNodeParent(n);
+    if (!p) continue;
+    if (!kidsOf.has(p.id)) kidsOf.set(p.id, []);
+    kidsOf.get(p.id).push(n);
+  }
+  for (const list of kidsOf.values()) list.sort((a, b) => (a.id < b.id ? -1 : 1));
+
   const place = new Map();
   let maxY = 0;
+  // Guards a parent loop: without it a cycle recurses until the stack blows,
+  // exactly as it did in the tree.
+  const laying = new Set();
+  const layout = (n, x, y, w, depth) => {
+    if (laying.has(n.id)) return 0;
+    laying.add(n.id);
+    const shown = n.pluggables.filter(p => live.has(n.id + ':' + p.id));
+    // a virtual guest has no sockets, so it gets a header and nothing else
+    const rows = n.virtual ? shown.length : Math.max(shown.length, 1);
+    const headH = HEAD_H + rows * ROW_H + 8;
+    let cy = y + headH;
+    const kids = kidsOf.get(n.id) || [];
+    for (const k of kids) {
+      cy += KID_GAP;
+      cy += layout(k, x + KID_INSET, cy, w - KID_INSET * 2, depth + 1);
+    }
+    const h = (cy - y) + (kids.length ? KID_GAP : 0);
+    place.set(n.id, { n, x, y, w, h, headH, shown, depth });
+    laying.delete(n.id);
+    return h;
+  };
+
   colIds.forEach((cid, ci) => {
-    const members = S.inv.nodes.filter(n => n.type !== 'location' && !n.virtual && locOf(n) === cid);
+    // only the roots of each containment chain; descendants nest inside them
+    const members = S.inv.nodes.filter(n =>
+      n.type !== 'location' && locOf(n) === cid && !isNodeParent(n));
     let y = 46;
     for (const n of members) {
-      const shown = n.pluggables.filter(p => live.has(n.id + ':' + p.id));
-      const h = HEAD_H + Math.max(shown.length, 1) * ROW_H + 8;
-      place.set(n.id, { n, x: ci * (BOX_W + COL_GAP) + 12, y, h, shown });
-      y += h + PAD_Y;
+      y += layout(n, ci * (BOX_W + COL_GAP) + 12, y, BOX_W, 0) + PAD_Y;
     }
     maxY = Math.max(maxY, y);
   });
+
+  // A parent loop leaves every node in it without a root, so nothing would be
+  // laid out and they would silently disappear. Same failure the tree had.
+  const orphans = S.inv.nodes.filter(n => n.type !== 'location' && !place.has(n.id));
+  if (orphans.length) {
+    let y = maxY + PAD_Y;
+    for (const n of orphans) y += layout(n, 12, y, BOX_W, 0) + PAD_Y;
+    maxY = y;
+  }
 
   if (!place.size) {
     v.append(bar);
@@ -2316,33 +2509,42 @@ function renderGraph(v, ix) {
     }, (loc ? (loc.label || loc.id) : 'no location').toUpperCase()));
   });
 
-  for (const b of place.values()) {
-    const { n, x, y, h, shown } = b;
+  // Shallowest first, so a nested child paints on top of the parent it sits in.
+  for (const b of [...place.values()].sort((a, c) => a.depth - c.depth)) {
+    const { n, x, y, w, h, shown, depth } = b;
     const selected = S.sel.kind === 'node' && S.sel.id === n.id;
     const box = svgEl('g', {
       style: 'cursor:pointer',
       onclick: () => { S.sel = { kind: 'node', id: n.id }; render(); },
     });
+    // Nested boxes step lighter with depth so containment is legible without
+    // reading a single label, and a guest is dashed since it has no sockets.
+    const shade = ['#21252d', '#262b34', '#2b313b', '#31374253'][Math.min(depth, 3)];
     box.append(svgEl('rect', {
-      x, y, width: BOX_W, height: h, rx: '6',
-      fill: selected ? '#24405f' : '#21252d', stroke: selected ? '#6ea8fe' : '#2c313b',
+      x, y, width: w, height: h, rx: '6',
+      fill: selected ? '#24405f' : shade,
+      stroke: selected ? '#6ea8fe' : (n.virtual ? '#3c4450' : '#2c313b'),
+      'stroke-dasharray': n.virtual ? '4 3' : null,
     }));
     box.append(svgEl('text', {
-      x: x + 9, y: y + 16, fill: '#e4e7ec', 'font-size': '12', 'font-family': GFONT,
-    }, trunc(n.label || n.id, 24)));
+      x: x + 9, y: y + 16, fill: n.virtual ? '#9aa3b2' : '#e4e7ec',
+      'font-size': depth ? '11' : '12', 'font-family': GFONT,
+    }, trunc(n.label || n.id, Math.max(10, 24 - depth * 3))));
+    // the right-hand corner shows what is still free, or that this is a guest
     const freeCount = n.pluggables.filter(pp => Core.slotsLeft(ix, n.id, pp) > 0).length;
-    if (freeCount > 0) {
+    const corner = n.virtual ? 'guest' : (freeCount > 0 ? freeCount + ' free' : '');
+    if (corner) {
       box.append(svgEl('text', {
-        x: x + BOX_W - 9, y: y + 16, fill: '#5dd39e', 'font-size': '10',
+        x: x + w - 9, y: y + 16, fill: n.virtual ? '#7f8794' : '#5dd39e', 'font-size': '10',
         'font-family': GFONT, 'text-anchor': 'end',
-      }, freeCount + ' free'));
+      }, corner));
     }
     shown.forEach((p, i) => {
       const py = y + HEAD_H + i * ROW_H + 8;
       box.append(svgEl('text', {
         x: x + 12, y: py + 3, fill: '#9aa3b2', 'font-size': '10', 'font-family': GFONT,
       }, trunc(p.id + (p.label && p.label !== p.id ? ' (' + p.label + ')' : ''), 28)));
-      for (const cx of [x + 5, x + BOX_W - 5]) {
+      for (const cx of [x + 5, x + w - 5]) {
         box.append(svgEl('circle', { cx, cy: py, r: '2.6', fill: WIRE[p.type] || '#7f8794' }));
       }
     });
@@ -2468,7 +2670,9 @@ function anchorOf(place, ref) {
   const i = b.shown.findIndex(p => p.id === parts[1]);
   if (i < 0) return null;
   const y = b.y + HEAD_H + i * ROW_H + 8;
-  return { x: b.x, y, left: b.x + 5, right: b.x + BOX_W - 5 };
+  // b.w, not BOX_W: a nested box is narrower than its parent, and using the
+  // constant put the right-hand anchor outside the box it belongs to.
+  return { x: b.x, y, left: b.x + 5, right: b.x + b.w - 5 };
 }
 function trunc(s, n) { return s.length > n ? s.slice(0, n - 1) + '…' : s; }
 

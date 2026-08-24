@@ -67,6 +67,10 @@ fields:
 
   # ------------------------------------------------------------------- power
   # in and out are separate because an adapter has both
+  - { id: circuit, label: Circuit / breaker, type: string, applies_to: [node, pluggable],
+      description: Which breaker feeds this, as labelled on the consumer unit. A hardware fact:
+        it does not change unless someone rewires. Enough to answer what dies when one trips,
+        without modelling every breaker as its own node }
   - { id: volts, label: Volts, type: number, unit: V, applies_to: [node, pluggable],
       description: Use when there is only one side }
   - { id: amps, label: Amps, type: number, unit: A, applies_to: [node, pluggable] }
@@ -530,6 +534,27 @@ templates:
         - { id: out4, type: power, dir: out }
         - { id: out5, type: power, dir: out }
         - { id: out6, type: power, dir: out }
+
+  # A wall socket is a source: it has outputs and no inlet, so every power chain
+  # in the graph starts at one instead of starting mid-air. A double socket is
+  # two pluggables on one node, not two nodes, because that is what lets a wide
+  # brick in one hole block the other via `blocks` on the cable.
+  - id: wall-outlet
+    group: power
+    label: Wall outlet (2 socket)
+    vars:
+      - { name: where, label: room or wall, default: office }
+      - { name: n, label: number, default: "1" }
+      - { name: circuit, label: breaker label, default: TODO }
+    node:
+      id: power/wall-{{where}}-{{n}}
+      label: Wall outlet {{where}} {{n}}
+      type: outlet
+      meta:
+        circuit: "{{circuit}}"
+      pluggables:
+        - { id: a, type: power, dir: out }
+        - { id: b, type: power, dir: out }
 
   - id: strip-4
     group: power

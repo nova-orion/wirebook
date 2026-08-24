@@ -198,6 +198,7 @@ $defs:
       bridge: {type: string, description: "The Proxmox bridge or bond this port is enslaved to"}
 
       # ---- power. in and out kept apart, since an adapter has both
+      circuit: {type: string, description: "Which breaker feeds this, as labelled on the consumer unit"}
       volts: {type: ["number", "string"], description: "Use when there is only one side"}
       amps: {type: ["number", "string"]}
       watts: {type: ["number", "string"]}

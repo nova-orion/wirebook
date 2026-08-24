@@ -51,11 +51,44 @@ main { display: grid; grid-template-columns: 268px 1fr; min-height: 0; }
 nav {
   background: var(--panel); border-right: 1px solid var(--line);
   overflow: auto; padding: 8px 0;
+  display: flex; flex-direction: column;
 }
+/* Three regions that must not look alike: app views, your inventory, and the
+   buttons that create things. Previously all three were one flat list of
+   identical rows, so "+ Node" was indistinguishable from a node. */
+nav .navsec { padding-bottom: 6px; }
+nav .navsec + .navsec { border-top: 1px solid var(--line); margin-top: 6px; padding-top: 2px; }
 nav h4 {
+  display: flex; align-items: center;
   margin: 12px 10px 4px; font-size: 10px; letter-spacing: .12em;
   text-transform: uppercase; color: var(--dim2); font-weight: 600;
 }
+nav h4 .tally {
+  margin-left: auto; letter-spacing: 0; font-weight: 400;
+  background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 8px; padding: 0 6px; font-size: 10px;
+}
+/* namespace groups come from the user's own ids, so they sit a level below the
+   region heading rather than competing with it */
+nav h5 {
+  margin: 8px 10px 2px 16px; font-size: 10px; font-weight: 400;
+  color: var(--dim2); text-transform: lowercase; letter-spacing: .04em;
+  border-bottom: 1px dotted #2c313b; padding-bottom: 2px;
+}
+nav .navinv .row { padding-left: 18px; }
+nav .navnote { color: var(--dim2); font-size: 11px; padding: 2px 10px 6px; }
+
+/* actions live at the bottom and are buttons, not rows */
+nav .navadd { margin-top: auto; border-top: 1px solid var(--line); padding-top: 10px; }
+nav .navbtns { display: flex; flex-direction: column; gap: 5px; padding: 0 10px 4px; }
+nav .navbtn {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  justify-content: flex-start; text-align: left;
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 4px;
+  padding: 5px 8px; cursor: pointer;
+}
+nav .navbtn:hover { border-color: var(--accent); background: #24405f; }
+nav .navbtn .plus { color: var(--ok); font-weight: 600; width: 9px; }
 nav .row {
   display: flex; align-items: center; gap: 6px; padding: 3px 10px;
   cursor: pointer; white-space: nowrap;
@@ -118,6 +151,10 @@ dialog .opt:hover { background: #24405f; }
 .empty { color: var(--dim2); padding: 18px 0; }
 .hint { color: var(--dim2); font-size: 12px; max-width: 760px; margin: -2px 0 8px; }
 .hint b { color: var(--dim); font-weight: 600; }
+/* Per-control help. Guidance used to live only in a paragraph at the top of the
+   view, so an individual input had nothing explaining it. */
+.subhelp { color: var(--dim2); font-size: 11px; line-height: 1.4; margin: 2px 0 2px 1px; max-width: 430px; }
+.subhelp code { color: var(--accent); }
 .hint code { color: var(--accent); }
 .toast {
   position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
