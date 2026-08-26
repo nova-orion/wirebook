@@ -263,6 +263,31 @@ nodes:
 	}
 }
 
+func TestFreeReportsRemainingFanoutSlots(t *testing.T) {
+	// `free` marked a port used as soon as it carried one cable, so a socket with
+	// fanout 2 and one plug in it vanished from the report and there was no way
+	// to find the spare slot short of reading the file by hand.
+	in := load1(t, `
+nodes:
+  - id: a
+    pluggables: [{id: p, type: power, dir: out, fanout: 2}]
+  - id: b
+    pluggables: [{id: p, type: power, dir: in, connected_with: "a:p"}]
+  - id: zfull
+    pluggables: [{id: p, type: power, dir: out}]
+  - id: c
+    pluggables: [{id: p, type: power, dir: in, connected_with: "zfull:p"}]
+`)
+	out := free(in)
+	if !strings.Contains(out, "1 of 2 free") {
+		t.Fatalf("a socket with a spare slot must be listed, and say how much is left:\n%s", out)
+	}
+	// a plain port carrying a cable is genuinely full and must not be listed
+	if strings.Contains(out, "zfull") {
+		t.Fatalf("a port at capacity must not be reported as free:\n%s", out)
+	}
+}
+
 // ------------------------------------------------------------------- format --
 
 func TestFormatIsIdempotentFromMessyInput(t *testing.T) {

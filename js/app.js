@@ -42,7 +42,11 @@ function idb(mode, fn) {
 const rememberHandle = h => idb('readwrite', st => st.put(h, 'current')).catch(() => {});
 const recallHandle = () => idb('readonly', st => st.get('current')).catch(() => null);
 const forgetHandle = () => idb('readwrite', st => st.delete('current')).catch(() => {});
-const PORT_TYPES = ['eth', 'power', 'usb', 'sata', 'pcie', 'm2', 'sfp', 'hdmi', 'dp', 'audio', 'coax', 'serial'];
+// Free-form types are legal; this is only the list the picker offers. atx is the
+// front panel power header, which is what an IP KVM closes to power a machine on
+// and off.
+const PORT_TYPES = ['eth', 'power', 'usb', 'sata', 'pcie', 'm2', 'sfp', 'hdmi', 'dp', 'dvi',
+  'vga', 'atx', 'audio', 'coax', 'serial'];
 
 const S = {
   inv: Core.emptyInv(),
@@ -252,6 +256,16 @@ async function writeHandle(h, text) {
   } catch (e) { alertDlg('Write failed', String(e.message || e)); }
 }
 
+// Why this page cannot write to a file, in the user's terms. Silently falling
+// back to a download every time, with no explanation, reads as the save button
+// being broken.
+function whyNoFileWrite() {
+  if (canFS) return '';
+  return location.protocol === 'file:'
+    ? 'This page was opened straight off disk as a file:// URL, and browsers do not let those write files.'
+    : 'This page is not on a secure origin, and browsers only allow writing files from https or localhost.';
+}
+
 function download(text) {
   const url = URL.createObjectURL(new Blob([text], { type: 'text/yaml' }));
   const a = el('a', { href: url, download: S.name });
@@ -261,6 +275,16 @@ function download(text) {
   // Deliberately NOT clearing S.dirty: nothing here can confirm a file was
   // actually written, and clearing it would silence the unsaved-work warning.
   saveDraft(); render();
+  if (!canFS && !download.explained) {
+    download.explained = true;
+    alertDlg('Saved as a download',
+      whyNoFileWrite()
+      + ' So Save has put the file in your downloads folder instead, and the copy you opened is untouched.'
+      + ' To overwrite the file in place, open this editor over https, then use Open once so the browser'
+      + ' gives the page permission to that file.');
+  } else {
+    toast('downloaded ' + S.name);
+  }
   toast('downloaded to your downloads folder, dirty flag kept');
 }
 
@@ -534,22 +558,47 @@ function pickTemplate() {
   body.append(el('div', { class: 'hint' },
     'Templates carry the port layout so you do not retype five ports for the second Flex Mini. ' +
     'Built any node you own more than one of? Open it and hit "save as template".'));
-  const groups = new Map();
-  for (const t of TPLS) {
-    if (!groups.has(t.group)) groups.set(t.group, []);
-    groups.get(t.group).push(t);
-  }
-  for (const g of [...groups.keys()].sort()) {
-    body.append(el('h3', { style: 'margin:10px 0 4px' }, g));
-    for (const t of groups.get(g).sort((a, b) => a.label < b.label ? -1 : 1)) {
-      body.append(el('div', { class: 'opt', onclick: () => { closeDlg(); templateForm(t); } },
-        t.label,
-        el('span', { class: 'faint' }, '  ' + t.id),
-        t.builtin ? null : el('span', { class: 'chip' }, 'saved')));
+  // Nearly thirty templates across seven groups, so it needs a filter like every
+  // other long list here. Enter takes the only remaining match, which makes
+  // "new from template, type psu, enter" a three-second job.
+  const search = el('input', {
+    placeholder: 'filter templates…', autocomplete: 'off', style: 'width:100%;margin:8px 0',
+  });
+  const list = el('div', {});
+  const paint = () => {
+    const q = search.value.trim().toLowerCase();
+    const hits = TPLS.filter(t =>
+      !q || (t.label + ' ' + t.id + ' ' + t.group).toLowerCase().includes(q));
+    const groups = new Map();
+    for (const t of hits) {
+      if (!groups.has(t.group)) groups.set(t.group, []);
+      groups.get(t.group).push(t);
     }
-  }
+    list.replaceChildren();
+    for (const g of [...groups.keys()].sort()) {
+      list.append(el('h3', { style: 'margin:10px 0 4px' }, g));
+      for (const t of groups.get(g).sort((a, b) => a.label < b.label ? -1 : 1)) {
+        list.append(el('div', { class: 'opt', onclick: () => { closeDlg(); templateForm(t); } },
+          t.label,
+          el('span', { class: 'faint' }, '  ' + t.id),
+          t.builtin ? null : el('span', { class: 'chip' }, 'saved')));
+      }
+    }
+    if (!hits.length) list.append(el('div', { class: 'muted' }, `Nothing matches "${search.value}".`));
+    return hits;
+  };
+  search.oninput = paint;
+  search.onkeydown = e => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const hits = paint();
+    if (hits.length === 1) { closeDlg(); templateForm(hits[0]); }
+  };
+  body.append(search, list);
+  paint();
   $('dlgFoot').replaceChildren(el('button', { onclick: closeDlg }, 'Cancel'));
   openDlg();
+  search.focus();
 }
 
 function templateForm(tpl) {
@@ -884,18 +933,23 @@ function metaEditor(holder, scope) {
   wrap.append(rows);
 
   // add: pick from the specs that apply here and are not already set
-  const avail = specsFor(scope).filter(f => !(f.id in meta));
-  const pick = el('select', { style: 'max-width:230px' });
-  pick.append(el('option', { value: '' }, avail.length ? '+ add field…' : 'all fields set'));
-  for (const f of avail.sort((a, b) => (a.label < b.label ? -1 : 1))) {
-    pick.append(el('option', { value: f.id }, f.label + (f.unit ? ` (${f.unit})` : '')));
-  }
-  pick.onchange = () => {
-    const id = pick.value; if (!id) return;
-    const spec = FIELD_BY_ID.get(id);
-    setKey(id, blankValue(spec));
-    touched();
+  // A combo box, not a plain <select>: there are seventy-odd shipped fields and
+  // scrolling a native dropdown to find "volts_out" is miserable. Type to filter,
+  // Enter takes the first match.
+  const avail = specsFor(scope)
+    .filter(f => !(f.id in meta))
+    .sort((a, b) => (a.label < b.label ? -1 : 1));
+  const label = id => {
+    if (!id) return avail.length ? '+ add field…' : 'all fields set';
+    const f = FIELD_BY_ID.get(id);
+    return f ? f.label + (f.unit ? ` (${f.unit})` : '') : id;
   };
+  const pick = el('span', { class: 'metapick' },
+    combo(avail.map(f => f.id), '', id => {
+      if (!id) return;
+      setKey(id, blankValue(FIELD_BY_ID.get(id)));
+      touched();
+    }, label));
   wrap.append(el('div', { style: 'margin-top:6px;display:flex;gap:6px;flex-wrap:wrap' },
     pick,
     el('button', {
@@ -1314,39 +1368,56 @@ function hashToSel(hash) {
   return null;
 }
 
-// replaceState, not pushState: every sidebar click becoming a history entry makes
-// the back button useless for actually leaving the app.
+// pushState, so Back walks back through the views and nodes you visited. This
+// used to be replaceState, on the theory that history entries would make Back
+// useless for leaving the app; in practice that traded a thing people do
+// constantly for a thing they do once, and Back appearing to do nothing reads as
+// the app being broken.
+//
+// The first entry is replaced rather than pushed, so the very first view does not
+// leave a duplicate behind and one Back still leaves.
 let suppressHash = false;
+let pushedOnce = false;
 function syncHash() {
   const want = selToHash(S.sel);
   if (location.hash === want) return;
   suppressHash = true;
-  try { history.replaceState(null, '', want); } catch { location.hash = want; }
+  try {
+    if (pushedOnce) history.pushState({ sel: S.sel }, '', want);
+    else { history.replaceState({ sel: S.sel }, '', want); pushedOnce = true; }
+  } catch { location.hash = want; }
   suppressHash = false;
 }
 
-window.addEventListener('hashchange', () => {
-  if (suppressHash) return;
+// Both events: popstate fires for pushState/back, hashchange for a hash typed or
+// pasted into the address bar.
+const applyLocation = () => {
   const sel = hashToSel(location.hash);
   if (!sel) return;
   // a link to a node that is not in this file should say so, not blank the view
   if (sel.kind === 'node' && !nodeById(sel.id)) { toast(sel.id + ' is not in this inventory'); return; }
+  if (selToHash(S.sel) === selToHash(sel)) return;
   S.sel = sel;
   render();
-});
+};
+window.addEventListener('popstate', () => { if (!suppressHash) applyLocation(); });
+window.addEventListener('hashchange', () => { if (!suppressHash) applyLocation(); });
 
 function render() {
   syncHash();
   const ix = Core.index(S.inv);
   const probs = Core.validate(S.inv, FIELD_BY_ID);
   renderHeader(probs);
+  renderMenu();
   renderNav(ix);
   renderView(ix, probs);
 }
 
 function renderHeader(probs) {
-  $('hFile').textContent = (S.loaded ? S.name : 'no file') +
-    (S.loaded && canFS && !S.handle ? '  (not linked to a file)' : '');
+  $('hFile').textContent = (S.loaded ? S.name : 'no file')
+    + (!canFS ? '  (downloads only)'
+      : (S.loaded && !S.handle ? '  (not linked to a file)' : ''));
+  $('hFile').title = canFS ? '' : whyNoFileWrite();
   $('hDirty').hidden = !S.dirty;
   $('hDirty').title = S.dirty ? 'unsaved changes' : '';
   $('bUndo').disabled = !S.undo.length;
@@ -1377,6 +1448,81 @@ function navRow(label, sel, count, depth = 0, twist = '') {
   );
 }
 
+/* ---- menu bar ------------------------------------------------------------
+ * The views, Settings and the create actions used to sit in the sidebar next to
+ * the inventory, so a node called "View" with a child called "Problems" looked
+ * exactly like the application's own navigation. Chrome belongs on a menu bar;
+ * the sidebar below is now nothing but your data.
+ */
+let openMenu = null;
+function closeMenus() {
+  openMenu = null;
+  for (const d of document.querySelectorAll('#menubar .menu.on')) d.classList.remove('on');
+  for (const d of document.querySelectorAll('#menubar .drop')) d.hidden = true;
+}
+document.addEventListener('click', e => {
+  if (!openMenu) return;
+  if (e.target && e.target.closest && e.target.closest('#menubar')) return;
+  closeMenus();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && openMenu) closeMenus(); });
+
+function renderMenu() {
+  const bar = $('menubar');
+  if (!bar) return;
+  bar.replaceChildren();
+
+  const go = id => { S.sel = { kind: 'view', id }; render(); };
+  const here = id => S.sel.kind === 'view' && S.sel.id === id;
+
+  // Actions are buttons, not menu items. Creating a node is the thing you do
+  // most often in an inventory editor, so burying it one click deep behind a
+  // menu was backwards.
+  const group = () => {
+    const gp = el('div', { class: 'tgroup' });
+    bar.append(gp);
+    return gp;
+  };
+
+  const adds = group();
+  adds.append(el('button', {
+    class: 'tbtn', title: 'An empty device you fill in by hand',
+    onclick: () => addNode('device'),
+  }, el('span', { class: 'plus' }, '+'), 'Node'));
+  adds.append(el('button', {
+    class: 'tbtn', title: 'A room, rack or shelf that other things sit in',
+    onclick: () => addNode('location'),
+  }, el('span', { class: 'plus' }, '+'), 'Location'));
+  adds.append(el('button', {
+    class: 'tbtn', title: 'A pre-shaped node: switch, PSU, PDU, wall outlet and so on',
+    onclick: pickTemplate,
+  }, el('span', { class: 'plus' }, '+'), 'Template'));
+
+  // Views as tabs. Seven of them, all worth reaching in one click.
+  const tabs = el('div', { class: 'tabs' });
+  for (const [id, label] of [['problems', 'Problems'], ['free', 'Free ports'],
+    ['cables', 'Cables'], ['tree', 'Tree'], ['graph', 'Graph'],
+    ['vlans', 'VLANs'], ['yaml', 'YAML']]) {
+    tabs.append(el('button', {
+      class: 'tab' + (here(id) ? ' on' : ''),
+      onclick: () => go(id),
+    }, label));
+  }
+  bar.append(tabs);
+
+  const right = el('div', { class: 'tright' });
+  if (S.sel.kind === 'node') {
+    // a node is not one of the tabs, so say where you are instead
+    right.append(el('span', { class: 'where' }, (nodeById(S.sel.id) || {}).label || S.sel.id));
+  }
+  right.append(el('button', {
+    class: 'tbtn icon' + (here('settings') ? ' on' : ''),
+    title: 'Settings: field definitions and templates',
+    onclick: () => go('settings'),
+  }, '\u2699'));
+  bar.append(right);
+}
+
 function renderNav(ix) {
   const nav = $('nav'); nav.replaceChildren();
 
@@ -1403,11 +1549,6 @@ function renderNav(ix) {
       p.id.toLowerCase().includes(q));
   };
 
-  // Three regions, deliberately unlike each other. Before this the sidebar was
-  // one flat list in which app views, your inventory and the buttons that create
-  // things all had identical weight, and the namespace groups taken from your
-  // own ids (compute, net, misc) sat at the same level as the chrome headings.
-  // "+ Node" looked exactly like a node.
   // `tally` goes in through here rather than being fished back out with
   // querySelector: re-finding an element you just built is fragile, and it
   // returned null outright under the stubbed DOM the smoke tests use.
@@ -1421,18 +1562,10 @@ function renderNav(ix) {
     return box;
   };
 
-  const views = region('Views');
-  views.append(navRow('Problems', { kind: 'view', id: 'problems' }));
-  views.append(navRow('Free ports', { kind: 'view', id: 'free' }));
-  views.append(navRow('Cables', { kind: 'view', id: 'cables' }, S.inv.links.length));
-  views.append(navRow('Tree', { kind: 'view', id: 'tree' }));
-  views.append(navRow('Graph', { kind: 'view', id: 'graph' }));
-  views.append(navRow('VLANs', { kind: 'view', id: 'vlans' }, S.inv.vlans.length || null));
-  views.append(navRow('YAML', { kind: 'view', id: 'yaml' }));
-  views.append(navRow('Settings', { kind: 'view', id: 'settings' }, FIELDS.length + TPLS.length));
-
-  // ---- inventory: one region, with the namespace groups as sub-headings so it
-  // reads as your data rather than as more application chrome
+  // Nothing but the inventory lives here. The views, Settings and the create
+  // actions moved to the menu bar, because a node called "View" with a child
+  // called "Problems" rendered identically to the application's own navigation
+  // and there was no way to tell your data from the chrome.
   const locs = S.inv.nodes.filter(n => n.type === 'location' && (!q || hit(n) ||
     S.inv.nodes.some(x => x.parent === n.id && hit(x))));
   const groups = new Map();
@@ -1465,12 +1598,15 @@ function renderNav(ix) {
         inv.append(navRow(n.label || n.id, { kind: 'node', id: n.id }, n.pluggables.length || null, 0));
       }
     }
-  } else if (q) {
+  } else {
     const inv = region('Inventory', 'navinv');
-    inv.append(el('div', { class: 'navnote' }, 'Nothing matches "' + S.navQ + '".'));
+    inv.append(el('div', { class: 'navnote' },
+      q ? 'Nothing matches "' + S.navQ + '".' : 'Empty. Add something from the Add menu.'));
   }
 
-  // ---- actions: buttons, at the bottom, not list rows
+  // Creating things stays reachable from here as well as from the Add menu, but
+  // as buttons pinned to the bottom, so an action can never be mistaken for a
+  // node in the list above it.
   const add = region(null, 'navadd');
   const action = (label, fn, title) => el('button', { class: 'navbtn', title: title || '', onclick: fn },
     el('span', { class: 'plus' }, '+'), label);
@@ -1662,6 +1798,9 @@ function renderNode(v, ix, n) {
     'socket next door is sitting over it. <b>free</b>: empty and actually usable. Only free ports are ' +
     'offered when you go looking for somewhere to put a cable, which is the entire reason the middle ' +
     'state exists. Use <b>blocked by…</b> to name the cable that is in the way.<br>' +
+    'Two small plugs really do fit in one universal socket, so a full port offers <b>+ another cable</b>. ' +
+    'That sets <b>fanout</b>, meaning this one hole carries that many cables. Note which way round this is: ' +
+    '<i>fanout</i> is one hole carrying several, <i>blocks</i> is one plug covering a different hole.<br>' +
     'Ports where a cable can land. <b>type</b> is load-bearing: a cable is only allowed between two ports of the same type. ' +
     '<b>dir</b> is for one-way connectors, where <code>out</code> is the providing side. A UPS outlet, a motherboard SATA port ' +
     'and a PSU brick tip are all <code>out</code>; a device inlet is <code>in</code>. Leave dir blank for symmetric things like ethernet. ' +
@@ -1697,6 +1836,22 @@ function renderNode(v, ix, n) {
             ? el('button', { title: 'a plug on another cable physically covers this socket',
                 onclick: () => markBlocked(ix, n, p) }, 'blocked by…')
             : null));
+      } else if (cables.length) {
+        // A full port used to offer nothing at all, so plugging a second thing
+        // into one socket meant knowing the word `fanout` and finding it behind
+        // "more". The model always allowed it; only the editor did not.
+        statusCell.append(el('div', {},
+          el('button', {
+            title: 'Plug another cable into this same socket, for two small plugs sharing one hole, '
+              + 'or a splitter you would rather not model as its own node. '
+              + 'This raises fanout, which is how many cables this one socket carries.',
+            onclick: () => {
+              p.fanout = cables.length + 1;
+              touchedSoft();
+              toast(`fanout ${p.fanout}: ${ref} now carries up to ${p.fanout} cables`);
+              pickPeer(Core.index(S.inv), ref, p);
+            },
+          }, '+ another cable')));
       }
       S.openPorts = S.openPorts || new Set();
       const open = S.openPorts.has(ref);
@@ -1762,9 +1917,14 @@ function renderNode(v, ix, n) {
         };
         return inp;
       };
+      // Full render: fanout decides how many cables the port will accept, so the
+      // connect button has to reappear the moment it is raised.
       const numIn = (obj, key, width) => {
-        const inp = el('input', { value: obj[key] ? String(obj[key]) : '', style: `width:${width}px` });
-        inp.onchange = () => { obj[key] = parseInt(inp.value, 10) || 0; touchedSoft(); };
+        const inp = el('input', {
+          type: 'number', min: '0', value: obj[key] ? String(obj[key]) : '',
+          style: `width:${width}px`,
+        });
+        inp.onchange = () => { obj[key] = parseInt(inp.value, 10) || 0; touched(); };
         return inp;
       };
       const vlanNote = S.inv.vlans.length ? '' : ' (define VLANs first in the VLANs view)';
@@ -1782,7 +1942,7 @@ function renderNode(v, ix, n) {
           field('fanout', numIn(p, 'fanout', 70),
             'How many cables this one socket can carry. Leave empty for the normal case of one. '
             + 'Set 3 when a splitter is plugged in and you would rather not model the splitter as its own node.'),
-          field('reserved for', inline(p, 'reserved', 300),
+          field('reserved for', inline(p, 'reserved', 300, true),
             'Why you are keeping this port empty on purpose, such as "second NAS uplink". It stays connectable '
             + 'and still counts as free; this only records the intent so a later you does not quietly take it.'),
           field('note', inline(p, 'note', 300),
@@ -1863,17 +2023,94 @@ function bind(obj, key, tag = 'input') {
   n.onchange = () => { obj[key] = n.value; touchedSoft(); };
   return n;
 }
-function inline(obj, key, width) {
+// `full` forces a whole re-render on change. touchedSoft only repaints the
+// header, which is right while typing a note but wrong for a value that changes
+// what the row offers: setting fanout left the port still showing no connect
+// button, so the extra capacity looked like it had not applied.
+function inline(obj, key, width, full) {
   const n = el('input', { value: obj[key] || '', style: `width:${width}px` });
-  n.onchange = () => { obj[key] = n.value; touchedSoft(); };
+  n.onchange = () => { obj[key] = n.value; if (full) touched(); else touchedSoft(); };
   return n;
 }
+// Short lists stay a native <select>: it is keyboard-friendly already and a
+// filter box over four options is noise. Anything longer becomes a combo box you
+// can type into, because scrolling a native dropdown of fifty node ids to find a
+// parent is miserable.
+const COMBO_AT = 8;
 function select(opts, cur, onchange, fmt = x => x || '—') {
-  const s = el('select');
   const list = opts.includes(cur) ? opts : [cur, ...opts];
-  for (const o of list) s.append(el('option', { value: o, selected: o === cur }, fmt(o)));
-  s.onchange = () => onchange(s.value);
-  return s;
+  if (list.length <= COMBO_AT) {
+    const s = el('select');
+    for (const o of list) s.append(el('option', { value: o, selected: o === cur }, fmt(o)));
+    s.onchange = () => onchange(s.value);
+    return s;
+  }
+  return combo(list, cur, onchange, fmt);
+}
+
+// A text input that filters a list under it. Deliberately not a datalist: those
+// cannot show a label different from the value, which the parent picker needs
+// ("Mini PC (compute/srv-1)"), and their filtering is inconsistent across
+// browsers.
+function combo(list, cur, onchange, fmt = x => x || '—') {
+  const wrap = el('span', { class: 'combo' });
+  const inp = el('input', {
+    value: fmt(cur), placeholder: 'type to filter…', autocomplete: 'off',
+    'data-value': cur,
+  });
+  const menu = el('div', { class: 'combomenu', hidden: true });
+  let active = -1;
+
+  const matches = () => {
+    const q = inp.value.trim().toLowerCase();
+    const typed = inp.value !== fmt(inp.dataset.value || '');
+    if (!q || !typed) return list;
+    return list.filter(o => (o + ' ' + fmt(o)).toLowerCase().includes(q));
+  };
+  const paint = () => {
+    const hits = matches();
+    active = Math.min(active, hits.length - 1);
+    menu.replaceChildren(...hits.map((o, i) => el('div', {
+      class: 'opt' + (i === active ? ' active' : '') + (o === inp.dataset.value ? ' cur' : ''),
+      'data-value': o,
+      onmousedown: e => { e.preventDefault(); choose(o); },
+    }, fmt(o))));
+    if (!hits.length) menu.append(el('div', { class: 'navnote' }, 'nothing matches'));
+  };
+  const openList = () => { menu.hidden = false; paint(); };
+  const shut = () => { menu.hidden = true; active = -1; };
+  const choose = o => {
+    inp.dataset.value = o;
+    inp.value = fmt(o);
+    shut();
+    onchange(o);
+  };
+
+  inp.onfocus = () => { inp.select(); openList(); };
+  inp.oninput = () => { active = -1; openList(); };
+  inp.onblur = () => {
+    // reverting on blur, so a half-typed filter never silently becomes the value
+    inp.value = fmt(inp.dataset.value || '');
+    shut();
+  };
+  inp.onkeydown = e => {
+    const hits = matches();
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (menu.hidden) openList();
+      active += e.key === 'ArrowDown' ? 1 : -1;
+      if (active < 0) active = hits.length - 1;
+      if (active >= hits.length) active = 0;
+      paint();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (hits.length) choose(active >= 0 ? hits[active] : hits[0]);
+    } else if (e.key === 'Escape') {
+      e.preventDefault(); inp.blur();
+    }
+  };
+  wrap.append(inp, menu);
+  return wrap;
 }
 
 // keep numbers as numbers so `volts: 12` does not become a string
@@ -2218,6 +2455,114 @@ function renderVlans(v) {
 }
 
 /* ---- containment tree --------------------------------------------------- */
+/* ---- tree: drag to re-parent, delete, peek ------------------------------- */
+let dragId = null;
+
+// Refuse a drop that would make a node its own ancestor. Without this, dragging
+// a parent onto its own child produces a loop, which strands both of them.
+function isAncestor(maybeAncestor, id) {
+  let cur = nodeById(id), guard = 0;
+  while (cur && guard++ < 10000) {
+    if (cur.id === maybeAncestor) return true;
+    cur = nodeById(cur.parent);
+  }
+  return false;
+}
+function canDropOn(dragging, target) {
+  if (!dragging || dragging === target) return false;
+  const n = nodeById(dragging);
+  if (!n || n.parent === target) return false;      // already there
+  return !isAncestor(dragging, target);
+}
+function markDrop(row) {
+  clearDrop();
+  row.classList.add('dropinto');
+}
+function clearDrop() {
+  for (const r of document.querySelectorAll('.dropinto')) r.classList.remove('dropinto');
+}
+function reparent(id, parentId) {
+  const n = nodeById(id);
+  if (!n || !canDropOn(id, parentId)) return;
+  n.parent = parentId;
+  touched();
+  toast(`${n.label || n.id} moved into ${parentId || 'the top level'}`);
+}
+
+// Deleting is the one action with no undo prompt of its own, so it says exactly
+// what else goes with it before doing anything.
+async function confirmDelete(n, children) {
+  const ix = Core.index(S.inv);
+  const refs = new Set(n.pluggables.map(p => n.id + ':' + p.id));
+  const cables = S.inv.links.filter(l => refs.has(l.a) || refs.has(l.b)).length;
+  const kids = (children || []).length;
+  const loses = [];
+  if (n.pluggables.length) loses.push(`${n.pluggables.length} port${n.pluggables.length > 1 ? 's' : ''}`);
+  if (cables) loses.push(`${cables} cable${cables > 1 ? 's' : ''}`);
+  const body = `Delete ${n.label || n.id}?`
+    + (loses.length ? ` This also removes ${loses.join(' and ')}.` : '')
+    + (kids ? ` Its ${kids} child node${kids > 1 ? 's move' : ' moves'} up to `
+      + `${n.parent || 'the top level'} rather than being deleted.` : '')
+    + ' Ctrl+Z undoes it.';
+  const opts = [{ id: 'yes', label: 'Delete', primary: true }];
+  if (await choose('Delete node', body, opts) !== 'yes') return;
+  deleteNode(n.id, n.parent);
+  S.sel = { kind: 'view', id: 'tree' };
+  render();
+}
+
+// Look at a node without leaving the tree. A new browser tab is not offered,
+// because the inventory is a local file the new tab has not opened, so it would
+// land on the restore banner instead of the node.
+function peekNode(id) {
+  const n = nodeById(id);
+  if (!n) { toast(id + ' is gone'); return; }
+  const ix = Core.index(S.inv);
+  $('dlgHead').textContent = n.label || n.id;
+  const body = $('dlgBody'); body.replaceChildren();
+
+  const facts = el('div', { class: 'grid2' });
+  const add = (k, val) => { if (val) facts.append(el('label', {}, k), el('div', {}, val)); };
+  add('id', n.id);
+  add('type', n.type);
+  add('parent', n.parent || '(top level)');
+  add('hostname', n.hostname);
+  if (n.virtual) add('virtual', 'yes, no sockets of its own');
+  add('note', n.note);
+  for (const [k, val] of Object.entries(n.meta || {})) {
+    const spec = FIELD_BY_ID.get(k);
+    if (val === '' || val == null) continue;
+    add(spec ? spec.label : k,
+      (typeof val === 'object' ? Object.entries(val).map(([a, b]) => `${a} ${b}`).join(', ') : String(val))
+      + (spec && spec.unit ? ' ' + spec.unit : ''));
+  }
+  body.append(facts);
+
+  if (n.pluggables.length) {
+    body.append(el('div', { class: 'faint', style: 'margin:10px 0 4px' }, 'ports'));
+    const rows = n.pluggables.map(p => {
+      const ref = n.id + ':' + p.id;
+      const cables = S.inv.links.filter(l => l.a === ref || l.b === ref);
+      const state = cables.length
+        ? cables.map(l => Core.peerOf(l, ref)).join(', ')
+        : (ix.blockedBy.has(ref) ? 'blocked' : (p.reserved ? 'reserved: ' + p.reserved : 'free'));
+      return el('tr', {},
+        el('td', {}, p.id),
+        el('td', { class: 'faint' }, p.type || ''),
+        el('td', { class: cables.length ? '' : 'faint' }, state));
+    });
+    body.append(el('table', {}, el('tbody', {}, ...rows)));
+  }
+
+  $('dlgFoot').replaceChildren(
+    el('button', {
+      class: 'btn-primary',
+      onclick: () => { closeDlg(); S.sel = { kind: 'node', id }; render(); },
+    }, 'Open fully'),
+    el('button', { onclick: closeDlg }, 'Close'));
+  openDlg();
+}
+
 function renderTree(v, ix) {
   v.append(el('h2', {}, 'Tree'));
   v.append(rawHint(
@@ -2225,7 +2570,10 @@ function renderTree(v, ix) {
     'not cabling, so a drive shows under its server even though the cable is a separate thing. Use it to answer ' +
     '"what is physically inside this"; use Graph to answer "what is plugged into this". ' +
     'Guests marked <b>virtual</b> appear under the machine they run on, which answers "what dies if this host ' +
-    'dies", but are left out of the free-port report and the graph since they have no sockets.'));
+    'dies", but are left out of the free-port report since they have no sockets.<br>' +
+    '<b>Drag a row onto another</b> to move it inside that one, or onto the strip at the bottom to bring it back ' +
+    'to the top level. A drop that would make something its own ancestor is refused. ' +
+    '<b>Ctrl+click</b> (or the peek button, or middle-click) opens a node in a dialog so you keep your place here.'));
 
   const kids = new Map();
   for (const n of S.inv.nodes) {
@@ -2276,14 +2624,64 @@ function renderTree(v, ix) {
           render();
         },
       }, children.length ? (open ? '▾' : '▸') : '·'));
+      // A real href, so right-click and "copy link address" give a usable deep
+      // link. Modified clicks peek instead of navigating, because opening a new
+      // browser tab is not useful here: the inventory lives in a local file the
+      // new tab has not opened, so it would land on the restore banner.
       row.append(el('a', {
-        href: '#', style: 'text-decoration:none',
-        onclick: e => { e.preventDefault(); S.sel = { kind: 'node', id: n.id }; render(); },
+        href: selToHash({ kind: 'node', id: n.id }),
+        style: 'text-decoration:none',
+        title: 'click to open, ctrl+click to peek without leaving the tree',
+        onclick: e => {
+          e.preventDefault();
+          if (e.ctrlKey || e.metaKey || e.shiftKey) { peekNode(n.id); return; }
+          S.sel = { kind: 'node', id: n.id }; render();
+        },
+        onauxclick: e => { if (e.button === 1) { e.preventDefault(); peekNode(n.id); } },
       }, n.label || n.id));
       if (n.type) row.append(el('span', { class: 'chip' }, n.type));
       if (n.virtual) row.append(el('span', { class: 'chip', title: 'no physical presence' }, 'virtual'));
       const bits = summarise(n);
       if (bits.length) row.append(el('span', { class: 'faint' }, bits.join(' · ')));
+
+      const tools = el('span', { class: 'treetools' });
+      tools.append(el('button', {
+        title: 'peek at this without leaving the tree',
+        onclick: e => { e.stopPropagation(); peekNode(n.id); },
+      }, 'peek'));
+      tools.append(el('button', {
+        title: 'delete this node',
+        onclick: e => { e.stopPropagation(); confirmDelete(n, children); },
+      }, '×'));
+      row.append(tools);
+
+      // ---- drag to re-parent
+      row.draggable = true;
+      row.dataset.nodeId = n.id;
+      row.addEventListener('dragstart', e => {
+        dragId = n.id;
+        row.classList.add('dragging');
+        if (e.dataTransfer) {
+          e.dataTransfer.effectAllowed = 'move';
+          // some browsers refuse to start a drag with no payload set
+          try { e.dataTransfer.setData('text/plain', n.id); } catch { /* ignore */ }
+        }
+      });
+      row.addEventListener('dragend', () => { dragId = null; row.classList.remove('dragging'); clearDrop(); });
+      row.addEventListener('dragover', e => {
+        if (!dragId || !canDropOn(dragId, n.id)) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        markDrop(row);
+      });
+      row.addEventListener('dragleave', () => row.classList.remove('dropinto'));
+      row.addEventListener('drop', e => {
+        e.preventDefault();
+        clearDrop();
+        if (!dragId || !canDropOn(dragId, n.id)) return;
+        reparent(dragId, n.id);
+      });
+
       dest.append(row);
       return open;
   };
@@ -2302,6 +2700,21 @@ function renderTree(v, ix) {
   };
   walk('', 0);
   v.append(box);
+
+  // Dropping onto a row nests; there has to be somewhere to drop to un-nest.
+  const root = el('div', { class: 'droproot' }, 'drop here to move to the top level');
+  root.addEventListener('dragover', e => {
+    if (!dragId || !nodeById(dragId) || !nodeById(dragId).parent) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    markDrop(root);
+  });
+  root.addEventListener('dragleave', () => root.classList.remove('dropinto'));
+  root.addEventListener('drop', e => {
+    e.preventDefault(); clearDrop();
+    if (dragId) reparent(dragId, '');
+  });
+  v.append(root);
 
   // Reachability ignoring collapse, so a folded subtree is not mistaken for one
   // that cannot be reached at all.
@@ -2354,18 +2767,24 @@ const BG = '#1b1e24';
 function renderGraph(v, ix) {
   v.append(el('h2', {}, 'Graph'));
   v.append(rawHint(
-    'One column per location. Inside a column, a box drawn <b>inside another box</b> is physically inside it: a drive in ' +
-    'its server, a guest on its host. Guests are dashed, because they have no sockets of their own. Every line is a real ' +
-    'cable between two real ports, so a chain like ' +
-    'outlet -> PSU brick -> device reads left to right. Dashed thick lines carry PoE. <b>Drag</b> to pan, ' +
+    'Columns are steps along a cable run, so a wall socket is on the left and whatever it eventually feeds is on the ' +
+    'right. Switch to <b>by place</b> if you would rather group by room. A box drawn <b>inside another box</b> is ' +
+    'physically inside it: a drive in its server, a guest on its host. Guests are dashed, because they have no ' +
+    'sockets of their own. Dashed thick lines carry PoE. ' +
+    '<b>Click a cable</b> to trace its run: what feeds it, and what it goes on to feed, with the exact sockets ' +
+    'marked and everything else faded. It follows direction, so it will not wander sideways into the other things ' +
+    'sharing the same wall socket. Click it again, or use clear, to stop. <b>Drag</b> to pan, ' +
     '<b>ctrl+scroll</b> (or pinch) to zoom toward the pointer, <b>click</b> a node to open it. Zoom needs ctrl held so ' +
     'that a plain scroll still moves the page instead of trapping it here.'));
 
   S.gfilter = S.gfilter || 'all';
   const bar = el('div', { style: 'display:flex;gap:6px;margin:8px 0;align-items:center;flex-wrap:wrap' });
-  for (const f of ['all', 'eth', 'power', 'other']) {
+  for (const f of ['all', 'eth', 'power', 'usb', 'av', 'other']) {
     bar.append(el('button', {
       class: S.gfilter === f ? 'btn-primary' : '',
+      title: f === 'power' ? 'mains and DC, plus any cable marked as carrying power'
+        : f === 'usb' ? 'USB leads that are not marked as power'
+          : f === 'av' ? 'hdmi, dp, dvi, vga, audio' : '',
       onclick: () => { S.gfilter = f; render(); },
     }, f));
   }
@@ -2401,13 +2820,34 @@ function renderGraph(v, ix) {
     S.inv.nodes.filter(n => n.type !== 'location' && !n.virtual && locOf(n) === cid).length;
   const colIds = [...order.map(l => l.id), ''].filter(cid => memberCount(cid) > 0);
 
-  const wanted = l => {
-    if (S.gfilter === 'all') return true;
+  // Bucket by what the cable CARRIES, not only by the connector on the end of
+  // it. A USB lead from a charger to a switch is a power cable, but its ports
+  // are type usb, so bucketing on connector alone filed it under "other" next to
+  // HDMI. The connector genuinely cannot tell you: the same USB port also
+  // carries the KVM's keyboard emulation and the Orange Pi's second NIC. Where
+  // that is ambiguous, `meta.carries` on the link settles it.
+  // A cable can belong to more than one bucket, so this returns a set. A USB-C
+  // lead often carries power AND data, and PoE is an ethernet run that also
+  // carries power; forcing either into one bucket hides it from the other.
+  const AV = ['hdmi', 'dp', 'dvi', 'vga', 'audio'];
+  const bucketsOf = l => {
     const p = ix.portByRef.get(l.a);
     const t = p ? p.port.type : '';
-    if (S.gfilter === 'other') return t !== 'eth' && t !== 'power';
-    return t === S.gfilter;
+    const base = t === 'eth' ? 'eth'
+      : t === 'power' ? 'power'
+        : t === 'usb' ? 'usb'
+          : AV.includes(t) ? 'av' : 'other';
+    const out = new Set([base]);
+    const says = l.meta && l.meta.carries;
+    if (says === 'power') {
+      out.add('power');
+      if (base !== 'power') out.delete(base);   // a pure power lead is not data
+    }
+    if (says === 'both') out.add('power');      // stays in its connector bucket too
+    if (l.poe) out.add('power');                // PoE: ethernet that also feeds
+    return out;
   };
+  const wanted = l => S.gfilter === 'all' || bucketsOf(l).has(S.gfilter);
   const links = S.inv.links.filter(l => ix.portByRef.has(l.a) && ix.portByRef.has(l.b) && wanted(l));
   const live = new Set(links.flatMap(l => [l.a, l.b]));
 
@@ -2453,10 +2893,103 @@ function renderGraph(v, ix) {
     return h;
   };
 
-  colIds.forEach((cid, ci) => {
-    // only the roots of each containment chain; descendants nest inside them
-    const members = S.inv.nodes.filter(n =>
-      n.type !== 'location' && locOf(n) === cid && !isNodeParent(n));
+  // Columns. Two ways to organise them, because one column per location does
+  // nothing when everything lives in one room, which is the common case: you get
+  // a single column and cables crossing it in insertion order.
+  //
+  //   by chain: column = how far along a cable run a thing sits, so the wall
+  //             socket is on the left and whatever it eventually feeds is on the
+  //             right. This is what the hint above has always promised.
+  //   by place: column = location. Useful once there really are several rooms.
+  const rootOf = n => {
+    let cur = n, guard = 0;
+    while (cur && guard++ < 10000) {
+      const p = isNodeParent(cur);
+      if (!p) return cur;
+      cur = p;
+    }
+    return n;
+  };
+
+  let columns;                       // array of arrays of root nodes
+  let colTitles;
+  if (S.glayout === 'place') {
+    columns = colIds.map(cid => S.inv.nodes.filter(n =>
+      n.type !== 'location' && locOf(n) === cid && !isNodeParent(n)));
+    colTitles = colIds.map(cid => {
+      const loc = ix.nodeById.get(cid);
+      return (loc ? (loc.label || loc.id) : 'no location').toUpperCase();
+    });
+  } else {
+    const roots = S.inv.nodes.filter(n => n.type !== 'location' && !isNodeParent(n));
+    const idx = new Map(roots.map((n, i) => [n.id, i]));
+    // Only a cable with a declared direction can order two things. An ethernet
+    // run between two switches says nothing about which comes first, so it is
+    // drawn but does not constrain the layout.
+    const edges = [];
+    for (const l of links) {
+      const pa = ix.portByRef.get(l.a), pb = ix.portByRef.get(l.b);
+      if (!pa || !pb) continue;
+      const ra = rootOf(pa.node), rb = rootOf(pb.node);
+      if (!idx.has(ra.id) || !idx.has(rb.id) || ra === rb) continue;
+      if (pa.port.dir === 'out' && pb.port.dir === 'in') edges.push([ra.id, rb.id]);
+      else if (pb.port.dir === 'out' && pa.port.dir === 'in') edges.push([rb.id, ra.id]);
+    }
+    // longest path from a source, relaxed until it settles
+    const rank = new Map(roots.map(n => [n.id, 0]));
+    for (let pass = 0; pass < roots.length + 2; pass++) {
+      let moved = false;
+      for (const [from, to] of edges) {
+        if (rank.get(to) < rank.get(from) + 1) { rank.set(to, rank.get(from) + 1); moved = true; }
+      }
+      if (!moved) break;            // a cycle would otherwise run to the cap
+    }
+    // things with no directed cable at all sit beside whatever they touch
+    const undirected = new Map();
+    for (const l of links) {
+      const pa = ix.portByRef.get(l.a), pb = ix.portByRef.get(l.b);
+      if (!pa || !pb) continue;
+      const ra = rootOf(pa.node).id, rb = rootOf(pb.node).id;
+      if (ra === rb) continue;
+      if (!undirected.has(ra)) undirected.set(ra, []);
+      if (!undirected.has(rb)) undirected.set(rb, []);
+      undirected.get(ra).push(rb);
+      undirected.get(rb).push(ra);
+    }
+    const touched = new Set(edges.flat());
+    for (const n of roots) {
+      if (touched.has(n.id)) continue;
+      const near = (undirected.get(n.id) || []).filter(x => touched.has(x));
+      if (near.length) {
+        rank.set(n.id, Math.round(near.reduce((s, x) => s + rank.get(x), 0) / near.length));
+      }
+    }
+    const maxRank = Math.max(0, ...[...rank.values()]);
+    columns = Array.from({ length: maxRank + 1 }, () => []);
+    for (const n of roots) columns[rank.get(n.id)].push(n);
+    // One pass of the barycentre heuristic: put each box next to the average
+    // position of what it connects to on the left. Cheap, and it removes most
+    // of the crossings a naive order produces.
+    const posIn = new Map();
+    columns.forEach((col, ci) => {
+      if (ci > 0) {
+        col.sort((a, b) => {
+          const key = n => {
+            const near = (undirected.get(n.id) || []).filter(x => posIn.has(x));
+            return near.length ? near.reduce((s, x) => s + posIn.get(x), 0) / near.length : 1e9;
+          };
+          return key(a) - key(b) || (a.id < b.id ? -1 : 1);
+        });
+      } else {
+        col.sort((a, b) => (a.id < b.id ? -1 : 1));
+      }
+      col.forEach((n, i) => posIn.set(n.id, i));
+    });
+    columns = columns.filter(c => c.length);
+    colTitles = columns.map((_, i) => i === 0 ? 'SOURCES' : 'STEP ' + i);
+  }
+
+  columns.forEach((members, ci) => {
     let y = 46;
     for (const n of members) {
       y += layout(n, ci * (BOX_W + COL_GAP) + 12, y, BOX_W, 0) + PAD_Y;
@@ -2479,10 +3012,20 @@ function renderGraph(v, ix) {
     return;
   }
 
-  const width = colIds.length * (BOX_W + COL_GAP) + 24;
+  const width = columns.length * (BOX_W + COL_GAP) + 24;
   const height = Math.max(maxY + 20, 240);
 
   const g = svgEl('g');
+  // Following one cable through a full diagram is the thing this view is for, and
+  // it was impossible: every line looked the same. Clicking a cable now traces
+  // the whole chain it belongs to, so "what feeds the AP" is one click.
+  const chain = S.gpick
+    ? neighbourhood(links, S.gpick, ix)
+    : tracedChain(links, S.gtrace, ix);
+  const traced = chain.links;
+  const litRefs = chain.refs;
+  const litNodes = chain.nodes;
+
   for (const l of links) {
     const A = anchorOf(place, l.a), B = anchorOf(place, l.b);
     if (!A || !B) continue;
@@ -2493,20 +3036,71 @@ function renderGraph(v, ix) {
     const dir = B.x >= A.x ? 1 : -1;
     const d = 'M' + from + ',' + A.y + ' C' + (from + dx * dir) + ',' + A.y +
       ' ' + (to - dx * dir) + ',' + B.y + ' ' + to + ',' + B.y;
-    g.append(svgEl('path', {
-      d, fill: 'none', stroke: WIRE[t] || '#7f8794',
-      'stroke-width': l.poe ? 2.4 : 1.4,
+    const on = traced.has(l);
+    const dim = traced.size > 0 && !on;
+    const wire = WIRE[t] || '#7f8794';
+    const line = svgEl('g', { style: 'cursor:pointer' });
+    // a fat transparent line under the thin one, so a 1.4px cable is clickable
+    line.append(svgEl('path', {
+      d, fill: 'none', stroke: 'transparent', 'stroke-width': '12',
+      onclick: e => {
+        if (e.stopPropagation) e.stopPropagation();
+        S.gpick = null;
+        S.gtrace = (S.gtrace && S.gtrace.a === l.a && S.gtrace.b === l.b)
+          ? null                                   // clicking it again clears
+          : { a: l.a, b: l.b };
+        render();
+      },
+    }, svgEl('title', {}, l.a + ' <-> ' + l.b + (l.poe ? ' (PoE)' : '')
+      + (l.label ? ' | ' + l.label : '') + '   (click to trace)')));
+    if (on) {
+      // a halo under the traced line so it reads through a crowd of others
+      line.append(svgEl('path', {
+        d, fill: 'none', stroke: '#ffffff', 'stroke-width': String((l.poe ? 2.4 : 1.4) + 5),
+        opacity: '0.22', 'pointer-events': 'none',
+      }));
+    }
+    line.append(svgEl('path', {
+      d, fill: 'none', stroke: on ? '#ffffff' : wire,
+      'stroke-width': String(on ? (l.poe ? 3.4 : 2.6) : (l.poe ? 2.4 : 1.4)),
       'stroke-dasharray': l.poe ? '5 3' : null,
-      opacity: '0.85',
-    }, svgEl('title', {}, l.a + ' <-> ' + l.b + (l.poe ? ' (PoE)' : '') + (l.label ? ' | ' + l.label : ''))));
+      opacity: dim ? '0.12' : '0.85',
+      'pointer-events': 'none',
+    }));
+    g.append(line);
   }
 
-  colIds.forEach((cid, ci) => {
-    const loc = ix.nodeById.get(cid);
+  // Location boundaries, drawn behind everything. In the chain layout a room's
+  // devices are spread across columns by how far along a run they sit, so a box
+  // round them is the only thing that still shows where they physically are.
+  const locBoxes = [];
+  for (const loc of S.inv.nodes.filter(n => n.type === 'location')) {
+    const inside = [...place.values()].filter(b => b.depth === 0 && locOf(b.n) === loc.id);
+    if (!inside.length) continue;
+    const x0 = Math.min(...inside.map(b => b.x)) - 10;
+    const y0 = Math.min(...inside.map(b => b.y)) - 22;
+    const x1 = Math.max(...inside.map(b => b.x + b.w)) + 10;
+    const y1 = Math.max(...inside.map(b => b.y + b.h)) + 10;
+    locBoxes.push({ loc, x0, y0, x1, y1, n: inside.length });
+  }
+  // biggest first, so a nested room draws on top of the one containing it
+  locBoxes.sort((a, b) => (b.x1 - b.x0) * (b.y1 - b.y0) - (a.x1 - a.x0) * (a.y1 - a.y0));
+  for (const lb of locBoxes) {
+    g.append(svgEl('rect', {
+      x: lb.x0, y: lb.y0, width: lb.x1 - lb.x0, height: lb.y1 - lb.y0, rx: '8',
+      fill: 'none', stroke: '#39414f', 'stroke-dasharray': '6 4', 'pointer-events': 'none',
+    }));
+    g.append(svgEl('text', {
+      x: lb.x0 + 8, y: lb.y0 + 13, fill: '#6b7482', 'font-size': '10', 'font-family': GFONT,
+      'pointer-events': 'none',
+    }, (lb.loc.label || lb.loc.id).toUpperCase() + '  (' + lb.n + ')'));
+  }
+
+  colTitles.forEach((title, ci) => {
     g.append(svgEl('text', {
       x: ci * (BOX_W + COL_GAP) + 12, y: 26,
       fill: '#6b7482', 'font-size': '11', 'font-family': GFONT,
-    }, (loc ? (loc.label || loc.id) : 'no location').toUpperCase()));
+    }, title));
   });
 
   // Shallowest first, so a nested child paints on top of the parent it sits in.
@@ -2515,16 +3109,37 @@ function renderGraph(v, ix) {
     const selected = S.sel.kind === 'node' && S.sel.id === n.id;
     const box = svgEl('g', {
       style: 'cursor:pointer',
-      onclick: () => { S.sel = { kind: 'node', id: n.id }; render(); },
+      // data-node is a testability hook: cables are also cursor:pointer groups,
+      // so "the first clickable g" is not reliably a node box.
+      'data-node': n.id,
+      // Single click selects and lights up what this box is wired to; opening
+      // the node takes a double click, so one stray click no longer throws you
+      // out of the diagram you were reading.
+      onclick: e => {
+        if (e.stopPropagation) e.stopPropagation();
+        S.gtrace = null;
+        S.gpick = S.gpick === n.id ? null : n.id;
+        render();
+      },
+      ondblclick: e => {
+        if (e.stopPropagation) e.stopPropagation();
+        S.gpick = null;
+        S.sel = { kind: 'node', id: n.id };
+        render();
+      },
     });
     // Nested boxes step lighter with depth so containment is legible without
     // reading a single label, and a guest is dashed since it has no sockets.
     const shade = ['#21252d', '#262b34', '#2b313b', '#31374253'][Math.min(depth, 3)];
+    const onChain = litNodes.has(n.id);
+    const dimmed = litNodes.size > 0 && !onChain;
     box.append(svgEl('rect', {
       x, y, width: w, height: h, rx: '6',
       fill: selected ? '#24405f' : shade,
-      stroke: selected ? '#6ea8fe' : (n.virtual ? '#3c4450' : '#2c313b'),
+      stroke: selected ? '#6ea8fe' : onChain ? '#ffffff' : (n.virtual ? '#3c4450' : '#2c313b'),
+      'stroke-width': onChain ? '2' : '1',
       'stroke-dasharray': n.virtual ? '4 3' : null,
+      opacity: dimmed ? '0.35' : '1',
     }));
     box.append(svgEl('text', {
       x: x + 9, y: y + 16, fill: n.virtual ? '#9aa3b2' : '#e4e7ec',
@@ -2541,11 +3156,22 @@ function renderGraph(v, ix) {
     }
     shown.forEach((p, i) => {
       const py = y + HEAD_H + i * ROW_H + 8;
+      // the exact sockets the traced chain passes through, so you can see where
+      // it lands rather than only which boxes are involved
+      const lit = litRefs.has(n.id + ':' + p.id);
       box.append(svgEl('text', {
-        x: x + 12, y: py + 3, fill: '#9aa3b2', 'font-size': '10', 'font-family': GFONT,
+        x: x + 12, y: py + 3, fill: lit ? '#ffffff' : '#9aa3b2',
+        'font-size': '10', 'font-family': GFONT,
+        'font-weight': lit ? '700' : null,
+        opacity: dimmed ? '0.4' : '1',
       }, trunc(p.id + (p.label && p.label !== p.id ? ' (' + p.label + ')' : ''), 28)));
       for (const cx of [x + 5, x + w - 5]) {
-        box.append(svgEl('circle', { cx, cy: py, r: '2.6', fill: WIRE[p.type] || '#7f8794' }));
+        box.append(svgEl('circle', {
+          cx, cy: py, r: lit ? '4' : '2.6',
+          fill: WIRE[p.type] || '#7f8794',
+          stroke: lit ? '#ffffff' : null, 'stroke-width': lit ? '1.4' : null,
+          opacity: dimmed ? '0.4' : '1',
+        }));
       }
     });
     g.append(box);
@@ -2555,7 +3181,9 @@ function renderGraph(v, ix) {
   const apply = () => g.setAttribute('transform', 'translate(' + S.gz.tx + ',' + S.gz.ty + ') scale(' + S.gz.k + ')');
   S.gz = z; apply();
 
-  const viewH = Math.min(height, 720);
+  // Fill whatever vertical space is left rather than a fixed 720px cap, which
+  // left a band of empty page below the diagram on any tall window.
+  let viewH = Math.min(height, 720);
   const root = svgEl('svg', {
     width: '100%', height: viewH,
     viewBox: '0 0 ' + width + ' ' + viewH,
@@ -2569,6 +3197,17 @@ function renderGraph(v, ix) {
   // and the viewBox stops disagreeing with the element's aspect ratio, which had
   // the browser fitting by height and centring the diagram in a sea of blank space.
   const syncBox = () => {
+    // Height first: measure how much of the scrolling pane is left below the
+    // top of the diagram, leaving room for the count line underneath it.
+    const sec = root.parentElement && root.parentElement.closest
+      ? root.parentElement.closest('section')
+      : null;
+    if (sec && root.getBoundingClientRect) {
+      const avail = Math.floor(sec.getBoundingClientRect().bottom
+        - root.getBoundingClientRect().top - 44);
+      const want = Math.max(260, avail);
+      if (want !== viewH) { viewH = want; root.setAttribute('height', String(viewH)); }
+    }
     const cw = root.clientWidth;
     if (cw > 0) root.setAttribute('viewBox', '0 0 ' + cw + ' ' + viewH);
   };
@@ -2596,6 +3235,11 @@ function renderGraph(v, ix) {
     S.gz = { k: k2, tx: p.x - (p.x - S.gz.tx) * r, ty: p.y - (p.y - S.gz.ty) * r };
     apply();
   }, { passive: false });
+
+  root.addEventListener('click', e => {
+    // a click that lands on the background, not on a box or a cable
+    if (e.target === root && !moved) { S.gpick = null; S.gtrace = null; render(); }
+  });
 
   let drag = null;
   // A drag that starts on a node used to pan and then fire that node's click on
@@ -2658,9 +3302,94 @@ function renderGraph(v, ix) {
 
   v.append(bar);
   v.append(root);
-  v.append(el('div', { class: 'faint', style: 'margin-top:6px' },
+  const foot = el('div', { class: 'faint', style: 'margin-top:6px' },
     place.size + ' nodes, ' + links.length + ' cables shown' +
-    (S.gfilter === 'all' ? '' : ' (filtered to ' + S.gfilter + ')')));
+    (S.gfilter === 'all' ? '' : ' (filtered to ' + S.gfilter + ')'));
+  if (traced.size) {
+    foot.append(' · ', el('b', {}, `tracing ${traced.size} cable${traced.size > 1 ? 's' : ''} `
+      + `through ${litNodes.size} node${litNodes.size > 1 ? 's' : ''}`), ' ',
+    el('button', { onclick: () => { S.gtrace = null; render(); } }, 'clear'));
+  }
+  v.append(foot);
+}
+
+// The run one cable belongs to: what feeds it, and what it goes on to feed.
+//
+// Traversal follows direction and never reverses, which is the whole point. An
+// earlier version walked the graph as if undirected, so from any cable it went
+// up to the wall socket and back down every other branch, lighting the entire
+// diagram. Here, from the feeding end we only ever go further upstream, and from
+// the fed end only further downstream, so the other devices sharing a socket are
+// left out. A cable with no declared direction, ethernet between two switches
+// say, highlights itself and its two boxes and stops.
+function tracedChain(links, sel, ix) {
+  const empty = { links: new Set(), refs: new Set(), nodes: new Set() };
+  if (!sel) return empty;
+  const seed = links.find(l => l.a === sel.a && l.b === sel.b);
+  if (!seed) return empty;
+
+  const onNode = new Map();
+  for (const l of links) {
+    for (const ref of [l.a, l.b]) {
+      const n = Core.splitRef(ref)[0];
+      if (!onNode.has(n)) onNode.set(n, []);
+      onNode.get(n).push(l);
+    }
+  }
+  const outLinks = new Set([seed]);
+  const nodes = new Set();
+  const dirOf = ref => { const p = ix.portByRef.get(ref); return p ? p.port.dir : ''; };
+
+  // want 'in': keep walking towards the source. want 'out': keep walking away.
+  const walk = (startNode, want) => {
+    const seen = new Set();
+    const queue = [startNode];
+    let guard = 0;
+    while (queue.length && guard++ < 5000) {
+      const nid = queue.pop();
+      if (seen.has(nid)) continue;
+      seen.add(nid);
+      nodes.add(nid);
+      for (const l of (onNode.get(nid) || [])) {
+        const mine = Core.splitRef(l.a)[0] === nid ? l.a : l.b;
+        if (dirOf(mine) !== want) continue;
+        outLinks.add(l);
+        queue.push(Core.splitRef(mine === l.a ? l.b : l.a)[0]);
+      }
+    }
+  };
+
+  for (const ref of [seed.a, seed.b]) {
+    const nid = Core.splitRef(ref)[0];
+    nodes.add(nid);
+    const d = dirOf(ref);
+    // this end supplies the cable, so its own supply is further upstream
+    if (d === 'out') walk(nid, 'in');
+    // this end is fed by the cable, so what it feeds is further downstream
+    else if (d === 'in') walk(nid, 'out');
+  }
+
+  const refs = new Set();
+  for (const l of outLinks) { refs.add(l.a); refs.add(l.b); }
+  return { links: outLinks, refs, nodes };
+}
+
+// Everything one node is directly wired to: its own cables, the sockets they use
+// and the boxes at the far ends. One hop only, because "what is this plugged
+// into" is a different question from "trace this run", and answering it with the
+// whole chain buries the answer.
+function neighbourhood(links, nodeId, ix) {
+  const outLinks = new Set();
+  const nodes = new Set([nodeId]);
+  const refs = new Set();
+  for (const l of links) {
+    const a = Core.splitRef(l.a)[0], b = Core.splitRef(l.b)[0];
+    if (a !== nodeId && b !== nodeId) continue;
+    outLinks.add(l);
+    nodes.add(a); nodes.add(b);
+    refs.add(l.a); refs.add(l.b);
+  }
+  return { links: outLinks, refs, nodes };
 }
 
 function anchorOf(place, ref) {

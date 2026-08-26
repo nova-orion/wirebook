@@ -71,7 +71,8 @@ async function open({ deleteFS = true, hash = '' } = {}) {
     });
   }
   await page.goto(base + 'index.html' + hash);
-  await page.waitForSelector('#nav .row');
+  // the toolbar always exists; #nav has no rows until an inventory is open
+  await page.waitForSelector('#menubar .tab');
   page.errs = errs;
   page.ctx = ctx;
   return page;
@@ -90,8 +91,13 @@ async function load(page, file = 'inventory.example.yaml') {
   await page.waitForFunction(() => S.loaded && S.inv.nodes.length > 0);
 }
 
-// Click a nav row by its visible label.
-const nav = (page, label) => page.click(`#nav .row:has(.lbl:text-is("${label}"))`);
+// Views are tabs on the toolbar now, not rows in the sidebar; the sidebar holds
+// nothing but the user's inventory. Settings is the gear on the right.
+const nav = (page, label) => label === 'Settings'
+  ? page.click('#menubar .tbtn.icon')
+  : page.click(`#menubar .tab:text-is("${label}")`);
+// and an inventory row, which is what the sidebar still has
+const navNode = (page, label) => page.click(`#nav .row:has(.lbl:text-is("${label}"))`);
 
 /* ------------------------------------------------------------------ boot --- */
 
@@ -160,30 +166,36 @@ await test('every node detail page renders with no errors', async () => {
 // its row. Every string, number and enum field in the picker did nothing.
 
 const NODE = 'compute/srv-1';
-// the meta picker is the select whose placeholder option is the add prompt
-const PICKER = '#view select:has(option[value=""]:text-matches("add field"))';
+// the meta picker is a filterable combo now, not a native select
+const PICKER = '#view .metapick input';
+// type the field id, then take the first match
+const addField = async (page, id) => {
+  const box = page.locator(PICKER);
+  await box.click();
+  await box.fill(id);
+  // by value, not "the first match": typing "serial" also matches "Serial console"
+  await page.locator(`#view .metapick .combomenu .opt[data-value="${id}"]`).click();
+  await page.waitForTimeout(60);
+};
 const openNodeWithMeta = async page => {
   await page.evaluate(id => { S.sel = { kind: 'node', id }; render(); }, NODE);
   await page.waitForSelector(PICKER);
 };
 
-// The picker only offers fields that are NOT already set, so a test must ask it
-// what is on the menu rather than hard-coding a field. Hard-coding "cpu" made
-// selectOption wait forever for an option the app was right to omit.
-// Runs in the page, so it must use plain CSS: :text-matches is a Playwright
-// selector engine extension and querySelector rejects it outright.
-const offered = page => page.evaluate(() => {
-  const s = [...document.querySelectorAll('#view select')]
-    .find(x => x.options[0] && /add field|all fields/.test(x.options[0].textContent));
-  if (!s) throw new Error('no meta picker on screen');
+// The picker only offers fields that are NOT already set, so a test must ask
+// what is on the menu rather than hard-coding a field: hard-coding "cpu" waited
+// forever for an option the app was right to omit.
+const offered = page => page.evaluate(id => {
+  const n = S.inv.nodes.find(x => x.id === id);
+  const already = new Set(Object.keys((n && n.meta) || {}));
   const out = {};
-  for (const o of s.options) {
-    if (!o.value) continue;
-    const spec = FIELD_BY_ID.get(o.value);
-    if (spec) out[o.value] = { type: spec.type, label: spec.label };
+  for (const f of FIELDS) {
+    if (f.applies_to.length && !f.applies_to.includes('node')) continue;
+    if (already.has(f.id)) continue;
+    out[f.id] = { type: f.type, label: f.label };
   }
   return out;
-});
+}, NODE);
 
 const firstOfType = (avail, type) => Object.keys(avail).find(id => avail[id].type === type);
 const metaKeys = page => page.evaluate(id =>
@@ -200,7 +212,7 @@ await test('choosing a field from the picker adds a visible row', async () => {
   assert.ok(id, 'the picker offered no string field: ' + JSON.stringify(avail));
   const before = (await metaKeys(page)).length;
 
-  await page.selectOption(PICKER, id);
+  await addField(page, id);
   await row(page, id).waitFor({ timeout: 3000 });
 
   const keys = await metaKeys(page);
@@ -229,12 +241,47 @@ await test('every field type in the picker survives being added', async () => {
     'too few field types offered to be a real check: ' + JSON.stringify(targets));
 
   for (const [type, id] of Object.entries(targets)) {
-    await page.selectOption(PICKER, id);
+    await addField(page, id);
     await row(page, id).waitFor({ timeout: 3000 }).catch(() => {});
     const keys = await metaKeys(page);
     assert.ok(keys.includes(id), `${type} field "${id}" vanished after being added`);
     assert.equal(await row(page, id).count(), 1, `${type} field "${id}" added no row`);
   }
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('the field picker filters as you type', async () => {
+  const page = await open();
+  await load(page);
+  await openNodeWithMeta(page);
+
+  const box = page.locator(PICKER);
+  await box.click();
+  const all = await page.locator('#view .metapick .combomenu .opt').count();
+  assert.ok(all > 20, 'the picker is not offering the shipped fields, saw ' + all);
+
+  await box.fill('volts');
+  await page.waitForTimeout(60);
+  const hits = await page.locator('#view .metapick .combomenu .opt').allTextContents();
+  assert.ok(hits.length > 0 && hits.length < all, 'typing did not narrow the list');
+  assert.ok(hits.every(h => /volt/i.test(h)), 'the filter kept unrelated fields: ' + hits.join(','));
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('long dropdowns are filterable, short ones stay native', async () => {
+  const page = await open();
+  await load(page);
+  // the parent picker lists every node, so it must be searchable
+  await page.evaluate(() => { S.sel = { kind: 'node', id: 'compute/srv-1' }; render(); });
+  const parent = page.locator('#view label:text-is("parent") + div .combo input');
+  assert.equal(await parent.count(), 1, 'the parent picker is not a filterable combo');
+  // dir has three options and is better off as a plain select
+  await page.evaluate(() => {
+    S.openPorts = new Set(['compute/srv-1:eth0']); render();
+  });
+  assert.ok(await page.locator('#view select').count() > 0, 'short lists should stay native selects');
   noErrs(page);
   await page.ctx.close();
 });
@@ -267,7 +314,7 @@ await test('an unfilled placeholder is not written, a filled one is', async () =
   await load(page);
   await openNodeWithMeta(page);
   const id = firstOfType(await offered(page), 'string');
-  await page.selectOption(PICKER, id);
+  await addField(page, id);
   await row(page, id).waitFor({ timeout: 3000 });
 
   let yaml = await page.evaluate(() => currentYaml());
@@ -293,7 +340,7 @@ await test('removing a field with x actually removes it', async () => {
   await load(page);
   await openNodeWithMeta(page);
   const id = firstOfType(await offered(page), 'string');
-  await page.selectOption(PICKER, id);
+  await addField(page, id);
   await row(page, id).waitFor({ timeout: 3000 });
 
   await row(page, id).locator('button:text-is("×")').click();
@@ -332,7 +379,7 @@ await test('deep link to settings works with no inventory open', async () => {
   await page.ctx.close();
 });
 
-await test('clicking Settings in the nav works with no inventory open', async () => {
+await test('the settings gear works with no inventory open', async () => {
   const page = await open();
   await nav(page, 'Settings');
   assert.match(await page.textContent('#view'), /fields \(\d+\)/,
@@ -576,39 +623,269 @@ await test('every shipped template produces a valid node', async () => {
   await page.ctx.close();
 });
 
+/* ------------------------------------------- more than one cable per port -- */
+// The model always allowed it through `fanout`, but the editor did not: a full
+// port offered no button, and fanout itself was hidden behind the "more" toggle,
+// so plugging two small plugs into one universal socket was impossible without
+// hand-editing the file.
+
+await test('a full port offers to take another cable', async () => {
+  const page = await open();
+  await load(page);
+  // compute/srv-1:eth0 is cabled to net/sw-1:p1 in the fixture
+  await page.evaluate(() => { S.sel = { kind: 'node', id: 'compute/srv-1' }; render(); });
+  const rowFull = page.locator('#view tr', { has: page.locator('input[value="eth0"]') });
+  await rowFull.waitFor({ timeout: 3000 });
+
+  const btn = rowFull.locator('button:text-is("+ another cable")');
+  assert.equal(await btn.count(), 1, 'a full port offers no way to add a second cable');
+
+  await btn.click();
+  await page.waitForTimeout(80);
+
+  // fanout is raised for us, and the picker opens
+  assert.equal(await page.evaluate(() =>
+    S.inv.nodes.find(n => n.id === 'compute/srv-1').pluggables.find(p => p.id === 'eth0').fanout), 2,
+  'fanout was not raised');
+  assert.equal(await page.evaluate(() => document.getElementById('dlg').open), true, 'no peer picker');
+
+  // pick the first compatible target and confirm two cables really land
+  const opts = page.locator('#dlgBody .opt');
+  assert.ok(await opts.count() > 0, 'nothing compatible offered for the second cable');
+  await opts.first().click();
+  await page.waitForTimeout(80);
+
+  const got = await page.evaluate(() => {
+    const ix = Core.index(S.inv);
+    return {
+      cables: Core.cablesAt(ix, 'compute/srv-1:eth0').length,
+      errs: Core.validate(S.inv, FIELD_BY_ID).filter(p => !p.warn).map(p => p.msg),
+    };
+  });
+  assert.equal(got.cables, 2, 'the second cable did not attach to the same port');
+  assert.deepEqual(got.errs, [], 'two cables on one port produced a validation error');
+  assert.match(await page.evaluate(() => currentYaml()), /fanout: 2/, 'fanout did not reach the file');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('fanout is visible on the port row once set', async () => {
+  const page = await open();
+  await load(page);
+  await page.evaluate(() => {
+    const p = S.inv.nodes.find(n => n.id === 'compute/srv-1').pluggables.find(x => x.id === 'eth1');
+    p.fanout = 3;
+    S.sel = { kind: 'node', id: 'compute/srv-1' }; render();
+  });
+  assert.match(await page.textContent('#view'), /fanout 3/,
+    'fanout is set but never shown, so it stays invisible behind the more toggle');
+  await page.ctx.close();
+});
+
+await test('typing fanout immediately offers the extra connections', async () => {
+  const page = await open();
+  await load(page);
+  // eth0 is already cabled, so at capacity 1 it offers no connect button
+  await page.evaluate(() => {
+    S.sel = { kind: 'node', id: 'compute/srv-1' };
+    S.openPorts = new Set(['compute/srv-1:eth0']);
+    render();
+  });
+  const rowSel = '#view tr:has(input[value="eth0"])';
+  const buttons = () => page.locator(rowSel).first().locator('button').allTextContents();
+  assert.ok(!(await buttons()).includes('connect'), 'a port at capacity should not offer connect');
+
+  // raise fanout the way a user does, by typing in the box
+  const fan = page.locator('#view label:text-is("fanout") + div input');
+  await fan.fill('3');
+  await fan.dispatchEvent('change');
+  await page.waitForTimeout(120);
+
+  // this is the bug: the model updated but the row never redrew, so the extra
+  // capacity looked like it had not applied at all
+  assert.ok((await buttons()).includes('connect'),
+    'raising fanout did not bring back the connect button: ' + (await buttons()).join(','));
+  assert.equal(await page.evaluate(() => {
+    const ix = Core.index(S.inv);
+    const n = S.inv.nodes.find(x => x.id === 'compute/srv-1');
+    return Core.slotsLeft(ix, n.id, n.pluggables.find(p => p.id === 'eth0'));
+  }), 2, 'capacity did not rise');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+/* ------------------------------------------------------ tree editing ------- */
+
+const treeRow = (page, id) => page.locator(`#view [data-node-id="${id}"]`);
+const parentOf = (page, id) => page.evaluate(i =>
+  (S.inv.nodes.find(n => n.id === i) || {}).parent, id);
+
+// Playwright cannot drive HTML5 drag and drop, so the events are dispatched with
+// a shared DataTransfer, which is what the browser itself does.
+const dragRow = (page, fromId, toSel) => page.evaluate(({ from, to }) => {
+  const src = document.querySelector(`[data-node-id="${from}"]`);
+  const dst = document.querySelector(to);
+  if (!src || !dst) throw new Error('missing ' + (src ? to : from));
+  const dt = new DataTransfer();
+  src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+  dst.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+  dst.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+  src.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+}, { from: fromId, to: toSel });
+
+await test('dragging a tree row onto another re-parents it', async () => {
+  const page = await open();
+  await load(page);
+  await nav(page, 'Tree');
+  await treeRow(page, 'net/sw-1').waitFor({ timeout: 3000 });
+
+  assert.notEqual(await parentOf(page, 'net/sw-1'), 'compute/srv-1');
+  await dragRow(page, 'net/sw-1', '[data-node-id="compute/srv-1"]');
+  await page.waitForTimeout(80);
+  assert.equal(await parentOf(page, 'net/sw-1'), 'compute/srv-1', 'the drop did not re-parent');
+
+  // and it must survive a save
+  assert.match(await page.evaluate(() => currentYaml()), /parent: compute\/srv-1/);
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('a drop that would make a loop is refused', async () => {
+  const page = await open();
+  await load(page);
+  await nav(page, 'Tree');
+  await treeRow(page, 'compute/disk-1').waitFor({ timeout: 3000 });
+
+  // disk-1's parent is srv-1, so dropping srv-1 onto disk-1 would make srv-1 its
+  // own descendant, which strands both of them
+  const before = await parentOf(page, 'compute/srv-1');
+  await dragRow(page, 'compute/srv-1', '[data-node-id="compute/disk-1"]');
+  await page.waitForTimeout(80);
+  assert.equal(await parentOf(page, 'compute/srv-1'), before, 'a cycle-making drop was accepted');
+
+  // and onto itself
+  await dragRow(page, 'compute/srv-1', '[data-node-id="compute/srv-1"]');
+  await page.waitForTimeout(80);
+  assert.equal(await parentOf(page, 'compute/srv-1'), before, 'a node was dropped onto itself');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('dropping on the strip moves a node to the top level', async () => {
+  const page = await open();
+  await load(page);
+  await nav(page, 'Tree');
+  await treeRow(page, 'compute/disk-1').waitFor({ timeout: 3000 });
+  assert.ok(await parentOf(page, 'compute/disk-1'), 'fixture has no nested node to un-nest');
+
+  await dragRow(page, 'compute/disk-1', '.droproot');
+  await page.waitForTimeout(80);
+  assert.equal(await parentOf(page, 'compute/disk-1'), '', 'the node was not moved to the top level');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('deleting from the tree warns what else goes, then removes it', async () => {
+  const page = await open();
+  await load(page);
+  await nav(page, 'Tree');
+  await treeRow(page, 'compute/srv-1').waitFor({ timeout: 3000 });
+
+  const before = await page.evaluate(() => S.inv.links.length);
+  await treeRow(page, 'compute/srv-1').locator('button:text-is("×")').click();
+  await page.waitForTimeout(80);
+
+  // it must say what is lost before doing anything
+  const warn = await page.textContent('#dlgBody');
+  assert.match(warn, /port/, 'the warning does not mention the ports: ' + warn);
+  assert.match(warn, /cable/, 'the warning does not mention the cables');
+  assert.match(warn, /child|move/, 'the warning does not say what happens to children');
+  assert.equal(await page.evaluate(() => !!S.inv.nodes.find(n => n.id === 'compute/srv-1')), true,
+    'the node was deleted before the confirmation');
+
+  await page.click('#dlgFoot button:text-is("Delete")');
+  await page.waitForTimeout(80);
+  assert.equal(await page.evaluate(() => !!S.inv.nodes.find(n => n.id === 'compute/srv-1')), false,
+    'the node was not deleted');
+  assert.ok(await page.evaluate(() => S.inv.links.length) < before, 'its cables were left dangling');
+  // the child moves up rather than disappearing with the parent
+  assert.equal(await page.evaluate(() => !!S.inv.nodes.find(n => n.id === 'compute/disk-1')), true,
+    'a child was deleted along with its parent');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('ctrl+click peeks without leaving the tree', async () => {
+  const page = await open();
+  await load(page);
+  await nav(page, 'Tree');
+  await treeRow(page, 'compute/srv-1').waitFor({ timeout: 3000 });
+
+  await treeRow(page, 'compute/srv-1').locator('a').click({ modifiers: ['Control'] });
+  await page.waitForTimeout(80);
+
+  // still on the tree, with a dialog showing the node
+  assert.equal(await page.evaluate(() => S.sel.id), 'tree', 'ctrl+click navigated away from the tree');
+  assert.equal(await page.evaluate(() => document.getElementById('dlg').open), true, 'no peek dialog');
+  const dlg = await page.textContent('#dlgBody');
+  assert.match(dlg, /compute\/srv-1/, 'the peek does not identify the node');
+  assert.match(dlg, /eth0/, 'the peek does not list the ports');
+
+  // and "Open fully" does navigate
+  await page.click('#dlgFoot button:text-is("Open fully")');
+  await page.waitForTimeout(80);
+  assert.equal(await page.evaluate(() => S.sel.kind), 'node', 'Open fully did not navigate');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('a plain click in the tree still navigates', async () => {
+  const page = await open();
+  await load(page);
+  await nav(page, 'Tree');
+  await treeRow(page, 'compute/srv-1').locator('a').click();
+  await page.waitForTimeout(80);
+  const sel = await page.evaluate(() => ({ ...S.sel }));
+  assert.deepEqual(sel, { kind: 'node', id: 'compute/srv-1' }, 'plain click broke');
+  await page.ctx.close();
+});
+
 /* ------------------------------------------------ sidebar structure -------- */
 // It used to be one flat list in which app views, the user's inventory and the
 // buttons that create things all had identical weight, and namespace groups from
 // the user's own ids sat at the same level as the chrome headings.
 
-await test('the sidebar separates views, inventory and actions', async () => {
+await test('the sidebar holds inventory only, chrome is on the toolbar', async () => {
   const page = await open();
   await load(page);
   const shape = await page.evaluate(() => ({
-    regions: [...document.querySelectorAll('#nav .navsec')].map(s => ({
-      heading: (s.querySelector('h4') && s.querySelector('h4').textContent || '').trim(),
-      rows: s.querySelectorAll('.row').length,
-      subs: s.querySelectorAll('h5').length,
-      btns: s.querySelectorAll('.navbtn').length,
-      borderTop: getComputedStyle(s).borderTopWidth,
-    })),
-    // an action must not be a row: that was the whole complaint
+    navText: (document.getElementById('nav').textContent || ''),
+    subs: document.querySelectorAll('#nav h5').length,
+    navBtns: document.querySelectorAll('#nav .navbtn').length,
+    // an action must never look like a node in the list above it
     actionRows: [...document.querySelectorAll('#nav .row')]
       .filter(r => /^\+/.test((r.textContent || '').trim())).length,
+    tabs: [...document.querySelectorAll('#menubar .tab')].map(t => t.textContent.trim()),
+    addBtns: [...document.querySelectorAll('#menubar .tgroup .tbtn')].map(b => b.textContent.trim()),
+    gear: document.querySelectorAll('#menubar .tbtn.icon').length,
+    menus: document.querySelectorAll('#menubar .drop').length,
   }));
-  assert.ok(shape.regions.length >= 3, 'expected at least three regions, saw ' + shape.regions.length);
+
+  // a node called "View" with a child "Problems" used to be indistinguishable
+  // from the application's own navigation, because both lived in this list
+  for (const v of ['Problems', 'Free ports', 'Cables', 'Graph', 'VLANs', 'YAML']) {
+    assert.ok(!shape.navText.includes(v), `"${v}" is still in the sidebar`);
+  }
   assert.equal(shape.actionRows, 0, 'a create action is still rendered as a plain nav row');
+  assert.ok(shape.subs > 0, 'namespace groups are not sub-headings');
+  assert.ok(shape.navBtns >= 3, 'the sidebar create buttons are gone');
 
-  const inv = shape.regions.find(r => /Inventory/i.test(r.heading));
-  assert.ok(inv, 'no Inventory region: ' + JSON.stringify(shape.regions.map(r => r.heading)));
-  assert.ok(inv.subs > 0, 'namespace groups are not sub-headings inside Inventory');
-
-  const acts = shape.regions.find(r => r.btns > 0);
-  assert.ok(acts && acts.btns >= 3, 'the create actions are not buttons');
-
-  // regions after the first must be visually divided, not just spaced
-  const divided = shape.regions.slice(1).filter(r => parseFloat(r.borderTop) > 0).length;
-  assert.ok(divided >= 2, 'regions have no separator, so the sidebar reads as one flat list');
+  // everything on the toolbar is visible, not hidden behind a menu
+  assert.equal(shape.menus, 0, 'the toolbar still has dropdown menus');
+  assert.ok(shape.tabs.length >= 7, 'views are not tabs: ' + shape.tabs.join(','));
+  assert.deepEqual(shape.addBtns, ['+Node', '+Location', '+Template'],
+    'add and template are not visible buttons: ' + shape.addBtns.join(','));
+  assert.equal(shape.gear, 1, 'no gear for settings');
   noErrs(page);
   await page.ctx.close();
 });
@@ -796,7 +1073,8 @@ await test('the toolbar wraps instead of clipping the window', async () => {
   page.on('pageerror', e => errs.push(e.message));
   await page.addInitScript(() => { delete window.showOpenFilePicker; });
   await page.goto(base + 'index.html');
-  await page.waitForSelector('#nav .row');
+  // the toolbar always exists; #nav has no rows until an inventory is open
+  await page.waitForSelector('#menubar .tab');
   await page.evaluate(y => ingest(y, 'x.yaml'),
     fs.readFileSync(path.join(root, 'inventory.example.yaml'), 'utf8'));
   for (const v of ['problems', 'free', 'cables', 'tree', 'graph', 'vlans', 'yaml', 'settings']) {
@@ -902,7 +1180,7 @@ await test('the graph draws a child inside its parent', async () => {
 
   const boxes = await page.evaluate(() => {
     const out = {};
-    for (const g of document.querySelectorAll('#view svg g[style*="cursor:pointer"]')) {
+    for (const g of document.querySelectorAll('#view svg g[data-node]')) {
       const t = g.querySelector('text');
       const r = g.querySelector('rect');
       if (!t || !r) continue;
@@ -940,7 +1218,7 @@ await test('a parent loop does not hang or hide nodes in the graph', async () =>
   });
   assert.equal(err, null, 'a parent loop broke the graph: ' + err);
   const rects = await page.evaluate(() =>
-    document.querySelectorAll('#view svg g[style*="cursor:pointer"] rect').length);
+    document.querySelectorAll('#view svg g[data-node] rect').length);
   assert.ok(rects >= 2, 'nodes in a parent loop vanished from the graph');
   noErrs(page);
   await page.ctx.close();
@@ -966,15 +1244,37 @@ await test('a drag that starts on a node pans instead of opening it', async () =
   await page.ctx.close();
 });
 
-await test('a plain click on a node still opens it', async () => {
+await test('single click selects a node, double click opens it', async () => {
   const page = await open();
   await load(page);
   await nav(page, 'Graph');
   await page.waitForSelector('#view svg rect');
-  await page.locator('#view svg rect').first().click();
-  await page.waitForTimeout(60);
+
+  // one click must NOT navigate: a stray click used to throw you out of the
+  // diagram you were reading
+  const box = page.locator('#view svg g[data-node="net/sw-1"]');
+  await box.waitFor({ timeout: 3000 });
+  await box.click({ position: { x: 20, y: 8 } });
+  await page.waitForTimeout(80);
+  assert.equal(await page.evaluate(() => S.sel.id), 'graph', 'a single click navigated away');
+  assert.equal(await page.evaluate(() => S.gpick), 'net/sw-1', 'a single click selected nothing');
+
+  // and it highlights what that node is wired to, one hop
+  const lit = await page.evaluate(() => {
+    const ix = Core.index(S.inv);
+    const live = S.inv.links.filter(l => ix.portByRef.has(l.a) && ix.portByRef.has(l.b));
+    const c = neighbourhood(live, 'net/sw-1', ix);
+    return { cables: c.links.size, nodes: c.nodes.size, total: S.inv.nodes.length };
+  });
+  assert.ok(lit.cables > 0, 'the selected node highlighted no cables');
+  assert.ok(lit.nodes < lit.total, 'selecting a node lit up the entire diagram');
+
+  // double click opens it
+  await box.dblclick({ position: { x: 20, y: 8 } });
+  await page.waitForTimeout(80);
   const sel = await page.evaluate(() => ({ ...S.sel }));
-  assert.equal(sel.kind, 'node', 'clicking a node did not open it, sel=' + JSON.stringify(sel));
+  assert.equal(sel.kind, 'node', 'double click did not open the node, sel=' + JSON.stringify(sel));
+  noErrs(page);
   await page.ctx.close();
 });
 
@@ -1025,6 +1325,30 @@ await test('fit scales an oversized diagram into the frame', async () => {
 
 /* -------------------------------------------------------- navigation ------- */
 
+await test('the browser back button walks back through the app', async () => {
+  const page = await open();
+  await load(page);
+  await nav(page, 'Tree');
+  await nav(page, 'Cables');
+  await page.evaluate(() => { S.sel = { kind: 'node', id: 'compute/srv-1' }; render(); });
+  await page.waitForTimeout(60);
+  assert.equal(await page.evaluate(() => S.sel.id), 'compute/srv-1');
+
+  await page.goBack();
+  await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(() => S.sel.id), 'cables', 'back did not return to the previous view');
+
+  await page.goBack();
+  await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(() => S.sel.id), 'tree', 'back only worked once');
+
+  await page.goForward();
+  await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(() => S.sel.id), 'cables', 'forward does not work');
+  noErrs(page);
+  await page.ctx.close();
+});
+
 await test('a deep link selects the view named in the url', async () => {
   const page = await open({ hash: '#view/free' });
   const sel = await page.evaluate(() => ({ ...S.sel }));
@@ -1038,7 +1362,7 @@ await test('editing then undo restores the previous document', async () => {
   const before = await page.evaluate(() => currentYaml());
   await openNodeWithMeta(page);
   const id = firstOfType(await offered(page), 'string');
-  await page.selectOption(PICKER, id);
+  await addField(page, id);
   await row(page, id).waitFor({ timeout: 3000 });
   const input = row(page, id).locator('input').first();
   await input.fill('WB-TEST');

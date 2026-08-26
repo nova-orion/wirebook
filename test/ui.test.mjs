@@ -50,8 +50,8 @@ function makeDom(settingsYaml) {
 
   const byId = {};
   for (const id of ['hFile', 'hDirty', 'hStat', 'hProb', 'bOpen', 'bSave', 'bUndo',
-                    'bRedo', 'bLink', 'nav', 'view', 'dlg', 'dlgHead', 'dlgBody',
-                    'dlgFoot', 'toast', 'banner']) byId[id] = new N();
+                    'bRedo', 'bLink', 'nav', 'view', 'menubar', 'dlg', 'dlgHead',
+                    'dlgBody', 'dlgFoot', 'toast', 'banner']) byId[id] = new N();
   byId.builtinSettings = new N('script');
   byId.builtinSettings.textContent = settingsYaml;
 

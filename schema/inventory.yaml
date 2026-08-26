@@ -198,6 +198,12 @@ $defs:
       bridge: {type: string, description: "The Proxmox bridge or bond this port is enslaved to"}
 
       # ---- power. in and out kept apart, since an adapter has both
+      carries:
+        type: string
+        enum: [power, data, both]
+        description: >-
+          On a link: what the cable actually carries, when the connector cannot say.
+          A USB lead may be power, data or both.
       circuit: {type: string, description: "Which breaker feeds this, as labelled on the consumer unit"}
       volts: {type: ["number", "string"], description: "Use when there is only one side"}
       amps: {type: ["number", "string"]}

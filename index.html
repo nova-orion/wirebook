@@ -28,6 +28,7 @@
 </header>
 
 <div id="banner" hidden></div>
+<div id="menubar"></div>
 <main>
   <nav id="nav"></nav>
   <section id="view"><div class="empty">Open an inventory.yaml to begin, or start a new one.</div></section>
@@ -111,6 +112,9 @@ fields:
 
   # ------------------------------------------------------------------- power
   # in and out are separate because an adapter has both
+  - { id: carries, label: Carries, type: enum, enum: [power, data, both], applies_to: [link],
+      description: What this cable actually carries, when the connector does not say. A USB lead
+        may be power, data or both, so the graph cannot bucket it without being told }
   - { id: circuit, label: Circuit / breaker, type: string, applies_to: [node, pluggable],
       description: Which breaker feeds this, as labelled on the consumer unit. A hardware fact:
         it does not change unless someone rewires. Enough to answer what dies when one trips,

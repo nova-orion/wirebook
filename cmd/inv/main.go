@@ -922,15 +922,19 @@ func cycleProblems(nodes map[string]*Node, order []string) []string {
 }
 
 func free(inv *Inventory) string {
-	used := map[string]bool{}
+	// Count cables per port rather than flagging the port used. A socket with
+	// fanout 2 carrying one cable was reported as full, so its spare slot never
+	// appeared in the report and there was no way to find it short of reading
+	// the file.
+	count := map[string]int{}
 	blocked := map[string]string{} // ref -> the link that blocks it
 	for i := range inv.Links {
 		l := &inv.Links[i]
 		if l.Planned {
 			continue // intent, so both ports stay free and keep being offered
 		}
-		used[l.A] = true
-		used[l.B] = true
+		count[l.A]++
+		count[l.B]++
 		for _, b := range l.Blocks {
 			blocked[b] = l.A + " <-> " + l.B
 		}
@@ -951,8 +955,13 @@ func free(inv *Inventory) string {
 		byKind := map[string][]string{}
 		for _, p := range n.Pluggables {
 			ref := n.ID + ":" + p.ID
+			capacity := 1
+			if p.Fanout > 1 {
+				capacity = p.Fanout
+			}
+			left := capacity - count[ref]
 			switch {
-			case used[ref]:
+			case left <= 0:
 				nUsed++
 				continue
 			case blocked[ref] != "":
@@ -964,7 +973,13 @@ func free(inv *Inventory) string {
 			if _, ok := byKind[k]; !ok {
 				kinds = append(kinds, k)
 			}
-			byKind[k] = append(byKind[k], display(p))
+			d := display(p)
+			// Say how much room is left, or a socket that already has something
+			// in it looks exactly like an empty one.
+			if capacity > 1 {
+				d = fmt.Sprintf("%s [%d of %d free]", d, left, capacity)
+			}
+			byKind[k] = append(byKind[k], d)
 		}
 		for _, k := range kinds {
 			fmt.Fprintf(tw, "  %s\t%s\t%s\n", n.ID, k, strings.Join(byKind[k], ", "))

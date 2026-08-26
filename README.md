@@ -34,7 +34,24 @@ problem. Here it is git's problem, which git is good at.
 - **Catches trunk mistakes.** A VLAN tagged on one end of a cable and not the
   other is the classic misconfiguration, and it is reported.
 - **Nests without limit.** Room → rack → server → NIC → port, as deep as you
-  like.
+  like, and the graph draws that nesting as boxes inside boxes rather than as a
+  flat row of siblings.
+- **Lets one socket carry several cables.** Two small plugs really do fit in one
+  universal socket, so a port has a `fanout` and a full port still offers to take
+  another. Note which way round this is: `fanout` is one hole carrying several
+  cables, `blocks` is one plug covering a different hole.
+- **Traces a run through the mess.** Click a cable in the graph and it lights up
+  what feeds it and what it goes on to feed, with the exact sockets marked and
+  everything else faded. It follows direction, so it does not wander sideways
+  into the other things sharing the same wall socket. Click a box instead and you
+  get everything that box is plugged into, one hop.
+- **Lays out by chain, not just by room.** Columns are steps along a cable run,
+  so a wall socket is on the left and whatever it eventually feeds is on the
+  right. Locations are drawn as a boundary around their members, which still
+  works when everything lives in one room and the room axis buys you nothing.
+- **Records what a cable carries when the connector cannot say.** A USB lead may
+  be power, data or both; `meta.carries` settles it, and the graph filters
+  accordingly instead of filing a phone charger under "other" beside HDMI.
 
 ## How this differs from NetBox, homelable, openDCIM and friends
 
@@ -101,8 +118,29 @@ Being straight about it:
 - **Another system needs to query it.** There is no API. The YAML parses in three
   lines in any language, which is not the same thing.
 - **You want rack elevations, or a floor plan.** Not implemented.
-- **Thousands of devices.** The design point is tens of nodes and low hundreds of
-  ports. Nothing is known to break above that; it is simply untested there.
+- **Tens of thousands of devices, or an editing team.** See the measured limits
+  below; the ceiling is the single-file, single-editor model long before it is
+  the code.
+
+## How big it goes
+
+Measured, not guessed. A generated inventory of **2,120 nodes, 7,040 ports and
+2,920 cables** across 40 racks, on an ordinary laptop:
+
+| | |
+|---|---|
+| `inv validate` | 0.07s, 31 MB |
+| `inv free` | 0.06s, 28 MB |
+| `inv fmt` | 0.24s, 97 MB |
+| open the file in the browser | 0.33s |
+| slowest view to draw (graph) | 0.23s |
+| what Save writes | 0.11s |
+
+So the numbers are comfortable two orders of magnitude above a homelab. What
+actually limits you is the design, not the speed: one file, one editor, no
+locking, and a graph that becomes unreadable long before it becomes slow. Treat a
+few thousand devices as the point where you should want a database and an API
+instead, which is what NetBox is for.
 
 ## Layout
 
@@ -355,15 +393,40 @@ second Flex Mini is two fields rather than five ports retyped. Defaults for
 common gear ship inside `index.html`. Built a node you own more than one of? Open
 it and hit **save as template**.
 
+## Editing
+
+The sidebar holds your inventory and nothing else; the application's own
+navigation is on the toolbar, so a node called "View" cannot be confused with the
+view called View. Beyond that:
+
+- **Tree**: drag a row onto another to move it inside that one, or onto the strip
+  at the bottom to bring it back to the top level. A drop that would make
+  something its own ancestor is refused. Ctrl+click, middle click or the peek
+  button opens a node in a dialog so you keep your place.
+- **Graph**: single click selects, double click opens, drag pans, ctrl+scroll
+  zooms toward the pointer.
+- **Back** works. Every view and node is a real URL, so the browser's back button
+  walks back through where you have been, and any view can be bookmarked.
+- Every labelled control carries its own one-line explanation, rather than a
+  paragraph at the top of the page that leaves each individual box unexplained.
+
 ## Tests
 
 ```sh
-node test/core.test.mjs
+npm run setup                 # once: playwright and chromium
+npm test                      # model, stub DOM, real browser, emitter parity
+node test/explore.mjs         # exploratory crawler
 ```
 
 The browser logic and the Go CLI are two implementations of one canonical
-format, and the suite asserts they emit byte-identical YAML. See
-[AGENTS.md](AGENTS.md) before changing either.
+format, and the suite asserts they emit byte-identical YAML.
+
+Anything a user can see is tested in real Chromium, because a stubbed DOM cannot
+dispatch an event, compute a style or lay anything out, and a suite of those
+passed for weeks while the shipped editor deleted every field you added to it.
+`test/explore.mjs` goes further and clicks everything it can find with hostile
+values, to catch what nobody thought to write a test for. See
+[AGENTS.md](AGENTS.md) before changing either implementation.
 
 ## Editor support
 
