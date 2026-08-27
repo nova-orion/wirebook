@@ -34,6 +34,16 @@
   <section id="view"><div class="empty">Open an inventory.yaml to begin, or start a new one.</div></section>
 </main>
 
+<!-- Two dialogs on purpose. The node editor is NON-modal, so the toolbar, Save
+     and Undo stay usable while it is open; #dlg stays modal for confirmations,
+     which must be able to appear on top of the editor. One element could not do
+     both: showModal() on an open dialog throws, and a modal makes everything
+     outside it inert. -->
+<dialog id="nodeDlg">
+  <div class="head" id="nodeHead"></div>
+  <div class="body" id="nodeBody"></div>
+  <div class="foot" id="nodeFoot"></div>
+</dialog>
 <dialog id="dlg">
   <div class="head" id="dlgHead"></div>
   <div class="body" id="dlgBody"></div>

@@ -122,6 +122,36 @@ Being straight about it:
   below; the ceiling is the single-file, single-editor model long before it is
   the code.
 
+## A worked example to poke at
+
+`inventory.demo.yaml` is a small flat wired up end to end. Open it before typing
+in any of your own kit. It is deliberately not tidy, because the untidy cases are
+what the tool is for:
+
+- a **wall socket** with two plugs in one hole (`fanout: 2`), which the free-port
+  report shows as `left [1 of 2 free]`
+- a **blocked** UPS outlet: the strip's moulded plug overhangs its neighbour, so
+  outlet 2 is reported blocked rather than free, and unplugging frees it
+- a **reserved** outlet and switch port, kept empty on purpose with the reason
+  recorded, so a later you does not quietly take them
+- a **planned** cable that has not been run: it stays as a reminder without
+  occupying either port
+- a **PSU brick** and a **DP-to-HDMI adapter** as their own nodes, because a brick
+  can fail and because two different connectors cannot be one cable
+- an **NVMe drive** and a **virtual guest** nested under the machine, where only
+  the drive has a socket
+- a **PoE** run that shows up under both the eth and power filters, and a USB lead
+  marked `carries: power` so it does not get filed beside HDMI
+
+It reports one warning on purpose. The planned cable would put the Pi on a
+different VLAN from the one it is on today, and a VLAN that differs between the
+two ends of a run is the classic trunk mistake. A warning means "finish the
+thought"; an error would mean "this cannot be true".
+
+The file carries no comments, and neither will yours: the canonical format has
+none, so opening and saving in the editor is lossless rather than quietly
+deleting everything you wrote around your data.
+
 ## How big it goes
 
 Measured, not guessed. A generated inventory of **2,120 nodes, 7,040 ports and

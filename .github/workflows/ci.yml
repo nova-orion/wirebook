@@ -68,3 +68,9 @@ jobs:
           go run ./cmd/inv fmt inventory.example.yaml | diff -u - inventory.example.yaml
           go run ./cmd/inv validate inventory.example.yaml
           go run ./cmd/inv free inventory.example.yaml
+          # the worked example ships to users, so it must stay canonical and load.
+          # It carries one deliberate warning, hence `validate || true`: a warning
+          # is not fatal and the point of it is to show what a warning looks like.
+          go run ./cmd/inv fmt inventory.demo.yaml | diff -u - inventory.demo.yaml
+          go run ./cmd/inv validate inventory.demo.yaml || true
+          go run ./cmd/inv free inventory.demo.yaml > /dev/null

@@ -1,0 +1,274 @@
+vlans:
+  - id: 10
+    name: trusted
+  - id: 20
+    name: iot
+  - id: 30
+    name: mgmt
+nodes:
+  - id: compute/guest-dns
+    label: dns
+    type: vm
+    virtual: true
+    hostname: dns.lan
+    parent: compute/server
+    note: no sockets of its own; it is here to answer what dies with the host
+  - id: compute/pi
+    label: Raspberry Pi
+    type: server
+    parent: loc/desk
+    pluggables:
+      - id: eth0
+        type: eth
+        connected_with: net/switch:p2
+        untagged: 10
+      - id: pwr
+        type: usb
+        dir: in
+  - id: compute/server
+    label: Mini PC
+    type: server
+    hostname: srv1.lan
+    parent: loc/cupboard
+    meta:
+      cpu: Intel N100
+      ram: 32
+      ram_slots: 2
+    pluggables:
+      - id: eth0
+        type: eth
+        connected_with: net/switch:p1
+        mac: aa:bb:cc:00:00:01
+        ips:
+          - 10.0.10.5
+        untagged: 10
+        tagged:
+          - 20
+          - 30
+        meta:
+          iface: enp1s0
+          speed: 1
+      - id: nvme0
+        type: m2
+        dir: out
+      - id: psu
+        type: power
+        dir: in
+        connected_with: power/strip:out2
+  - id: compute/server-nvme
+    label: 1TB NVMe
+    type: disk
+    parent: compute/server
+    meta:
+      capacity: 1000
+      nvme_gen: 4
+    pluggables:
+      - id: m2
+        type: m2
+        dir: in
+        connected_with: compute/server:nvme0
+  - id: loc/cupboard
+    label: Hall cupboard
+    type: location
+    parent: loc/flat
+  - id: loc/desk
+    label: Desk
+    type: location
+    parent: loc/flat
+  - id: loc/flat
+    label: Flat
+    type: location
+  - id: misc/dp-hdmi
+    label: DP to HDMI adapter
+    type: adapter
+    parent: loc/desk
+    pluggables:
+      - id: in
+        type: dp
+        dir: in
+      - id: out
+        type: hdmi
+        dir: out
+        connected_with: misc/monitor:hdmi1
+  - id: misc/monitor
+    label: Monitor
+    type: display
+    parent: loc/desk
+    pluggables:
+      - id: hdmi1
+        type: hdmi
+        dir: in
+      - id: dp1
+        type: dp
+        dir: in
+      - id: psu
+        type: power
+        dir: in
+        connected_with: power/wall-desk:right
+  - id: net/ap
+    label: Ceiling AP
+    type: ap
+    parent: loc/flat
+    note: powered over the ethernet run, so it has no brick of its own
+    pluggables:
+      - id: eth0
+        type: eth
+        untagged: 20
+  - id: net/switch
+    label: 8 port managed switch
+    type: switch
+    parent: loc/cupboard
+    meta:
+      poe_budget: 60
+    pluggables:
+      - id: p1
+        type: eth
+        untagged: 10
+        tagged:
+          - 20
+          - 30
+        meta:
+          speed: 1
+      - id: p2
+        type: eth
+        untagged: 10
+      - id: p3
+        type: eth
+        untagged: 20
+        note: the AP hangs off this one
+      - id: p4
+        type: eth
+        untagged: 30
+        reserved: for the IPMI card, once the server has one
+      - id: dc
+        type: power
+        dir: in
+        connected_with: power/psu-switch:out
+  - id: power/psu-switch
+    label: Switch PSU
+    type: adapter
+    parent: loc/cupboard
+    meta:
+      amps_out: 1
+      volts_in: 230
+      volts_out: 12
+    pluggables:
+      - id: in
+        type: power
+        dir: in
+        connected_with: power/strip:out1
+      - id: out
+        type: power
+        dir: out
+        meta:
+          tip: barrel
+  - id: power/strip
+    label: Power strip, 4 socket
+    type: strip
+    parent: loc/cupboard
+    pluggables:
+      - id: inlet
+        type: power
+        dir: in
+      - id: out1
+        type: power
+        dir: out
+      - id: out2
+        type: power
+        dir: out
+      - id: out3
+        type: power
+        dir: out
+      - id: out4
+        type: power
+        dir: out
+  - id: power/ups
+    label: UPS
+    type: ups
+    parent: loc/cupboard
+    note: outlet 2 is unusable, see the note on the cable in outlet 1
+    meta:
+      watts_max: 650
+    pluggables:
+      - id: inlet
+        type: power
+        dir: in
+        connected_with: power/wall-desk:left
+        meta:
+          plug: c14
+      - id: out1
+        type: power
+        dir: out
+        meta:
+          plug: c13
+      - id: out2
+        type: power
+        dir: out
+        meta:
+          plug: c13
+      - id: out3
+        type: power
+        dir: out
+        meta:
+          plug: c13
+      - id: out4
+        type: power
+        dir: out
+        reserved: kept free for the second NAS, when it arrives
+        meta:
+          plug: c13
+  - id: power/usb-charger
+    label: USB charger, 3 port
+    type: adapter
+    parent: loc/desk
+    pluggables:
+      - id: plug
+        type: power
+        dir: in
+        connected_with: power/wall-desk:right
+      - id: usb1
+        type: usb
+        dir: out
+      - id: usb2
+        type: usb
+        dir: out
+      - id: usb3
+        type: usb
+        dir: out
+        reserved: spare
+  - id: power/wall-desk
+    label: Wall socket, desk
+    type: outlet
+    parent: loc/desk
+    meta:
+      circuit: CU-4 sockets
+      volts: 230
+    pluggables:
+      - id: left
+        type: power
+        dir: out
+        fanout: 2
+      - id: right
+        type: power
+        dir: out
+        fanout: 2
+links:
+  - a: compute/pi:eth0
+    b: net/switch:p4
+    note: move the Pi onto the management VLAN once the cable is long enough
+    planned: true
+  - a: compute/pi:pwr
+    b: power/usb-charger:usb1
+    meta:
+      carries: power
+  - a: net/ap:eth0
+    b: net/switch:p3
+    poe: true
+    meta:
+      poe_standard: 802.3af
+      poe_watts: 9
+  - a: power/strip:inlet
+    b: power/ups:out1
+    note: the strip's moulded plug overhangs the next outlet
+    blocks:
+      - power/ups:out2

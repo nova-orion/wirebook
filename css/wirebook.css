@@ -179,13 +179,50 @@ dialog {
 dialog::backdrop { background: #0009; }
 dialog .head { padding: 11px 14px; border-bottom: 1px solid var(--line); font-weight: 600; }
 dialog .body { padding: 12px 14px; max-height: 60vh; overflow: auto; }
+
+/* The node editor: a real editor, not a summary, and non-modal so the toolbar
+   stays live behind it. Positioned rather than centred, so it does not sit on
+   top of the sidebar you are picking nodes from. */
+#nodeDlg {
+  /* left:auto is load bearing. The UA stylesheet sets inset-inline-start:0 on a
+     dialog, which over-constrains it against `right` and `width`, and the same
+     thing vertically made `bottom` inert: the panel grew to its content height,
+     nearly 2000px, so its own scrollbar never appeared and half the controls sat
+     below the fold with nothing able to scroll them into view. Height is stated
+     outright instead. */
+  position: fixed; margin: 0;
+  top: 96px; right: 12px; left: auto;
+  width: min(1000px, calc(100vw - 300px));
+  height: calc(100vh - 108px);
+  max-height: none; max-width: calc(100vw - 24px);
+  box-shadow: 0 18px 50px #000a;
+}
+#nodeDlg[open] { display: flex; flex-direction: column; }
+/* min-height:0 lets a flex child actually shrink, which is what allows it to
+   scroll rather than pushing the panel taller */
+#nodeDlg .body { flex: 1; min-height: 0; max-height: none; overflow: auto; }
+@media (max-width: 900px) {
+  #nodeDlg { width: calc(100vw - 24px); right: 12px; }
+}
 dialog .foot { padding: 10px 14px; border-top: 1px solid var(--line); display: flex; gap: 8px; justify-content: flex-end; }
 dialog .opt { padding: 5px 8px; cursor: pointer; border-radius: 4px; }
 dialog .opt:hover { background: #24405f; }
-/* tree: drag to re-parent, and per-row tools that stay out of the way */
-.treetools { margin-left: auto; display: flex; gap: 4px; opacity: 0; }
+/* tree: drag to re-parent, and per-row tools that stay out of the way.
+   The row highlights on hover and is capped in width, because the buttons used
+   to sit at the far right edge of a wide window with nothing tying them to the
+   row they belong to. */
+.treerow {
+  display: flex; gap: 8px; align-items: baseline;
+  padding-top: 2px; padding-bottom: 2px;
+  border-bottom: 1px solid #22252c; max-width: 860px;
+}
+.treerow:hover { background: var(--panel2); }
+/* deliberately NOT margin-left:auto. Flush right put the buttons at the far edge
+   of a wide window with a lane of empty space between them and the row they act
+   on, so it was never obvious which row you were about to delete. */
+.treetools { margin-left: 12px; display: flex; gap: 4px; opacity: 0; }
 .treetools button { padding: 0 6px; font-size: 11px; line-height: 18px; }
-[draggable="true"]:hover .treetools, .treetools:focus-within { opacity: 1; }
+.treerow:hover .treetools, .treetools:focus-within { opacity: 1; }
 [draggable="true"] { cursor: grab; }
 [draggable="true"].dragging { opacity: .45; }
 .dropinto { outline: 1px solid var(--accent); outline-offset: -1px; background: #24405f; }

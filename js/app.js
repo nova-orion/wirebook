@@ -1404,6 +1404,7 @@ window.addEventListener('popstate', () => { if (!suppressHash) applyLocation(); 
 window.addEventListener('hashchange', () => { if (!suppressHash) applyLocation(); });
 
 function render() {
+  if (S.sel.kind === 'view') S.lastView = S.sel.id;
   syncHash();
   const ix = Core.index(S.inv);
   const probs = Core.validate(S.inv, FIELD_BY_ID);
@@ -1411,6 +1412,11 @@ function render() {
   renderMenu();
   renderNav(ix);
   renderView(ix, probs);
+  // synchronously, so render() actually finishes rendering. Scheduling this in a
+  // microtask meant anything that read the DOM right after a render saw the
+  // previous contents of the editor.
+  if (S.sel.kind === 'node') paintNodeDialog(ix);
+  else if ($('nodeDlg').open) $('nodeDlg').close();
 }
 
 function renderHeader(probs) {
@@ -1624,7 +1630,7 @@ function renderView(ix, probs) {
   // exist before any inventory does. Gating it behind "open a file first" meant
   // /#view/settings on a fresh load showed one line of prose, and the only way
   // to reach it was to create a node and navigate back.
-  if (blank && S.sel.id === 'settings') return renderSettings(v);
+  if (blank && S.sel.kind === 'view' && S.sel.id === 'settings') return renderSettings(v);
 
   if (blank) {
     // Keep the heading. Replacing the whole pane left no clue which view you had
@@ -1647,15 +1653,18 @@ function renderView(ix, probs) {
       ', which works without one.'));
     return;
   }
-  if (S.sel.kind === 'node') return renderNode(v, ix, nodeById(S.sel.id));
-  if (S.sel.id === 'problems') return renderProblems(v, probs);
-  if (S.sel.id === 'free') return renderFree(v, ix);
-  if (S.sel.id === 'cables') return renderCables(v, ix);
-  if (S.sel.id === 'yaml') return renderYaml(v);
-  if (S.sel.id === 'settings') return renderSettings(v);
-  if (S.sel.id === 'graph') return renderGraph(v, ix);
-  if (S.sel.id === 'tree') return renderTree(v, ix);
-  if (S.sel.id === 'vlans') return renderVlans(v);
+  // A node is edited in a dialog on top of the view you were reading, rather
+  // than replacing it. S.sel still addresses the node, so deep links, the back
+  // button and "copy link" are unchanged; only where it is drawn moved.
+  const view = S.sel.kind === 'node' ? (S.lastView || 'problems') : S.sel.id;
+  if (view === 'problems') return renderProblems(v, probs);
+  if (view === 'free') return renderFree(v, ix);
+  if (view === 'cables') return renderCables(v, ix);
+  if (view === 'yaml') return renderYaml(v);
+  if (view === 'settings') return renderSettings(v);
+  if (view === 'graph') return renderGraph(v, ix);
+  if (view === 'tree') return renderTree(v, ix);
+  if (view === 'vlans') return renderVlans(v);
 }
 
 // Refs are rendered in accent blue everywhere; make them behave like the links
@@ -2266,14 +2275,24 @@ function renderFree(v, ix) {
       const k = Core.kind(p);
       if (!byKind.has(k)) byKind.set(k, []);
       const tag = (p.label && p.label !== p.id ? `${p.id} ("${p.label}")` : p.id) +
-        (Core.capacity(p) > 1 ? ` [${left}/${Core.capacity(p)}]` : '');
-      byKind.get(k).push(tag);
+        // same wording as `inv free`, so the report and the view do not
+        // spell the same fact two different ways
+        (Core.capacity(p) > 1 ? ` [${left} of ${Core.capacity(p)} free]` : '');
+      // A reserved port is free but spoken for. Showing it as plain free here,
+      // of all places, hides the reason you kept it empty from the one screen
+      // you look at when deciding where to put a cable.
+      byKind.get(k).push(p.reserved
+        ? el('span', {},
+          tag, ' ',
+          el('span', { class: 'chip', title: 'kept free on purpose' }, 'reserved'),
+          ' ', el('span', { class: 'faint' }, p.reserved))
+        : tag);
     }
     for (const [k, list] of byKind) {
       rows.push(el('tr', {},
         el('td', {}, el('a', { href: '#', onclick: e => { e.preventDefault(); S.sel = { kind: 'node', id: n.id }; render(); } }, n.id)),
         el('td', {}, el('span', { class: 'chip ' + k.split('/')[0] }, k)),
-        el('td', {}, list.join(', ')),
+        el('td', {}, ...list.flatMap((x, i) => (i ? [', ', x] : [x]))),
       ));
     }
   }
@@ -2315,21 +2334,42 @@ function renderCables(v, ix) {
       const planned = el('input', { type: 'checkbox', title: 'intended, not run yet' });
       planned.checked = l.planned;
       planned.onchange = () => { l.planned = planned.checked; touched(); };
-      return el('tr', { style: l.planned ? 'opacity:.72' : '' },
+      // A cable has meta too, and without this every link-scoped field was
+      // unreachable from the editor: `carries`, cable length, colour, PoE watts.
+      // They existed in the settings and in the file and nowhere on screen.
+      S.openLinks = S.openLinks || new Set();
+      const key = l.a + '|' + l.b;
+      const open = S.openLinks.has(key);
+      const extras = [];
+      if (l.meta) extras.push(Object.keys(l.meta).length + ' meta');
+      const main = el('tr', { style: l.planned ? 'opacity:.72' : '' },
         el('td', {}, l.a), el('td', {}, l.b),
         el('td', {}, inline(l, 'label', 110)),
         el('td', {}, poe),
         el('td', {}, planned),
         el('td', {}, el('button', { onclick: () => blocksEditor(l) }, `blocks (${l.blocks.length})`)),
         el('td', {}, inline(l, 'note', 170)),
+        el('td', {},
+          el('button', {
+            onclick: () => { open ? S.openLinks.delete(key) : S.openLinks.add(key); render(); },
+          }, open ? '▾ less' : '▸ more'),
+          extras.length ? el('span', { class: 'faint' }, ' ' + extras.join(', ')) : null),
         el('td', { class: 'right' }, el('button', {
           title: 'unplug this cable',
           onclick: () => { removeLink(l); },
         }, '×')),
       );
-    });
+      if (!open) return [main];
+      const detail = el('tr', {}, el('td', { colspan: 9, style: 'padding:8px 0 14px 12px' },
+        rawHint('Facts about the cable itself, not about either end. <b>carries</b> is the one to reach for '
+          + 'when the connector cannot say what a lead does: a USB lead may be power, data or both, and the '
+          + 'graph buckets it accordingly instead of filing a charger next to HDMI.'),
+        metaEditor(l, 'link')));
+      return [main, detail];
+    }).flat();
   v.append(el('table', {},
-    el('thead', {}, el('tr', {}, ...['a', 'b', 'label', 'poe', 'planned', 'blocks', 'note', ''].map(h => el('th', {}, h)))),
+    el('thead', {}, el('tr', {},
+      ...['a', 'b', 'label', 'poe', 'planned', 'blocks', 'note', 'detail', ''].map(h => el('th', {}, h)))),
     el('tbody', {}, ...rows)));
 }
 
@@ -2424,12 +2464,22 @@ function renderVlans(v) {
         if (p.untagged === vl.id) users.push(`${n.id}:${p.id} (untagged)`);
         else if ((p.tagged || []).includes(vl.id)) users.push(`${n.id}:${p.id}`);
       }
-      return el('tr', {},
+      // a VLAN carries meta like everything else, and a field declared for every
+      // scope had nowhere to go here, so it round tripped through the file
+      // invisibly instead of being editable
+      S.openVlans = S.openVlans || new Set();
+      const open = S.openVlans.has(vl.id);
+      const main = el('tr', {},
         el('td', {}, idIn),
         el('td', {}, inline(vl, 'name', 110)),
         el('td', {}, inline(vl, 'subnet', 130)),
         el('td', {}, inline(vl, 'note', 170)),
         el('td', { class: 'faint' }, users.length ? `${users.length} port${users.length > 1 ? 's' : ''}` : 'unused'),
+        el('td', {},
+          el('button', {
+            onclick: () => { open ? S.openVlans.delete(vl.id) : S.openVlans.add(vl.id); render(); },
+          }, open ? '▾ less' : '▸ more'),
+          vl.meta ? el('span', { class: 'faint' }, ` ${Object.keys(vl.meta).length} meta`) : null),
         el('td', { class: 'right' }, el('button', {
           onclick: async () => {
             if (users.length && await choose('Delete VLAN',
@@ -2439,9 +2489,12 @@ function renderVlans(v) {
           },
         }, '×')),
       );
-    });
+      if (!open) return [main];
+      return [main, el('tr', {}, el('td', { colspan: 7, style: 'padding:8px 0 14px 12px' },
+        metaEditor(vl, 'vlan')))];
+    }).flat();
     v.append(el('table', {},
-      el('thead', {}, el('tr', {}, ...['id', 'name', 'subnet', 'note', 'used by', ''].map(h => el('th', {}, h)))),
+      el('thead', {}, el('tr', {}, ...['id', 'name', 'subnet', 'note', 'used by', 'detail', ''].map(h => el('th', {}, h)))),
       el('tbody', {}, ...rows)));
   }
   v.append(el('button', {
@@ -2511,57 +2564,50 @@ async function confirmDelete(n, children) {
   render();
 }
 
-// Look at a node without leaving the tree. A new browser tab is not offered,
-// because the inventory is a local file the new tab has not opened, so it would
-// land on the restore banner instead of the node.
-function peekNode(id) {
-  const n = nodeById(id);
-  if (!n) { toast(id + ' is gone'); return; }
-  const ix = Core.index(S.inv);
-  $('dlgHead').textContent = n.label || n.id;
-  const body = $('dlgBody'); body.replaceChildren();
+// The node editor, in a dialog on top of whatever view you were reading.
+//
+// This is the same renderNode used before, not a cut-down "peek": there is one
+// node editor and it is reachable from the tree, the graph, the sidebar and a
+// deep link. Building a second read-only version would be two things to keep in
+// step, and the read-only one would be the wrong one every time you actually
+// wanted to change something.
+function paintNodeDialog(ix) {
+  const n = nodeById(S.sel.id);
+  const dlg = $('nodeDlg');
+  if (!n) { S.sel = { kind: 'view', id: S.lastView || 'problems' }; render(); return; }
 
-  const facts = el('div', { class: 'grid2' });
-  const add = (k, val) => { if (val) facts.append(el('label', {}, k), el('div', {}, val)); };
-  add('id', n.id);
-  add('type', n.type);
-  add('parent', n.parent || '(top level)');
-  add('hostname', n.hostname);
-  if (n.virtual) add('virtual', 'yes, no sockets of its own');
-  add('note', n.note);
-  for (const [k, val] of Object.entries(n.meta || {})) {
-    const spec = FIELD_BY_ID.get(k);
-    if (val === '' || val == null) continue;
-    add(spec ? spec.label : k,
-      (typeof val === 'object' ? Object.entries(val).map(([a, b]) => `${a} ${b}`).join(', ') : String(val))
-      + (spec && spec.unit ? ' ' + spec.unit : ''));
-  }
-  body.append(facts);
+  $('nodeHead').textContent = n.label || n.id;
+  const body = $('nodeBody');
+  body.replaceChildren();
+  renderNode(body, ix || Core.index(S.inv), n);
 
-  if (n.pluggables.length) {
-    body.append(el('div', { class: 'faint', style: 'margin:10px 0 4px' }, 'ports'));
-    const rows = n.pluggables.map(p => {
-      const ref = n.id + ':' + p.id;
-      const cables = S.inv.links.filter(l => l.a === ref || l.b === ref);
-      const state = cables.length
-        ? cables.map(l => Core.peerOf(l, ref)).join(', ')
-        : (ix.blockedBy.has(ref) ? 'blocked' : (p.reserved ? 'reserved: ' + p.reserved : 'free'));
-      return el('tr', {},
-        el('td', {}, p.id),
-        el('td', { class: 'faint' }, p.type || ''),
-        el('td', { class: cables.length ? '' : 'faint' }, state));
-    });
-    body.append(el('table', {}, el('tbody', {}, ...rows)));
-  }
-
-  $('dlgFoot').replaceChildren(
+  $('nodeFoot').replaceChildren(
+    el('button', {
+      title: 'copy a link straight to this node',
+      onclick: () => copyText(location.href.split('#')[0] + selToHash(S.sel), 'link copied', 'Link to this node'),
+    }, 'link'),
     el('button', {
       class: 'btn-primary',
-      onclick: () => { closeDlg(); S.sel = { kind: 'node', id }; render(); },
-    }, 'Open fully'),
-    el('button', { onclick: closeDlg }, 'Close'));
-  openDlg();
+      onclick: () => { $('nodeDlg').close(); },
+    }, 'Done'));
+
+  // show(), not showModal(): a modal makes the toolbar, Save and Undo inert,
+  // and you edit a node for minutes at a time.
+  if (!dlg.open) dlg.show();
 }
+
+// Closing has to put the selection back, or the URL keeps pointing at a node
+// that is no longer on screen.
+$('nodeDlg').addEventListener('close', () => {
+  if (S.sel.kind === 'node') {
+    S.sel = { kind: 'view', id: S.lastView || 'problems' };
+    render();
+  }
+});
+// Escape does not close a non-modal dialog by itself.
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && $('nodeDlg').open && !$('dlg').open) $('nodeDlg').close();
+});
 
 function renderTree(v, ix) {
   v.append(el('h2', {}, 'Tree'));
@@ -2573,7 +2619,7 @@ function renderTree(v, ix) {
     'dies", but are left out of the free-port report since they have no sockets.<br>' +
     '<b>Drag a row onto another</b> to move it inside that one, or onto the strip at the bottom to bring it back ' +
     'to the top level. A drop that would make something its own ancestor is refused. ' +
-    '<b>Ctrl+click</b> (or the peek button, or middle-click) opens a node in a dialog so you keep your place here.'));
+    'Clicking a node opens it for editing in a dialog, so you never lose your place in the tree.'));
 
   const kids = new Map();
   for (const n of S.inv.nodes) {
@@ -2614,7 +2660,8 @@ function renderTree(v, ix) {
       const children = kids.get(n.id) || [];
       const open = !S.collapsed.has(n.id);
       const row = el('div', {
-        style: `display:flex;gap:8px;align-items:baseline;padding:2px 0 2px ${depth * 18}px;border-bottom:1px solid #22252c`,
+        class: 'treerow',
+        style: `padding-left:${depth * 18}px`,
       });
       row.append(el('span', {
         style: 'width:14px;color:var(--dim2);cursor:pointer;user-select:none',
@@ -2631,13 +2678,8 @@ function renderTree(v, ix) {
       row.append(el('a', {
         href: selToHash({ kind: 'node', id: n.id }),
         style: 'text-decoration:none',
-        title: 'click to open, ctrl+click to peek without leaving the tree',
-        onclick: e => {
-          e.preventDefault();
-          if (e.ctrlKey || e.metaKey || e.shiftKey) { peekNode(n.id); return; }
-          S.sel = { kind: 'node', id: n.id }; render();
-        },
-        onauxclick: e => { if (e.button === 1) { e.preventDefault(); peekNode(n.id); } },
+        title: 'open this node; the tree stays behind the dialog',
+        onclick: e => { e.preventDefault(); S.sel = { kind: 'node', id: n.id }; render(); },
       }, n.label || n.id));
       if (n.type) row.append(el('span', { class: 'chip' }, n.type));
       if (n.virtual) row.append(el('span', { class: 'chip', title: 'no physical presence' }, 'virtual'));
@@ -2646,9 +2688,9 @@ function renderTree(v, ix) {
 
       const tools = el('span', { class: 'treetools' });
       tools.append(el('button', {
-        title: 'peek at this without leaving the tree',
-        onclick: e => { e.stopPropagation(); peekNode(n.id); },
-      }, 'peek'));
+        title: 'open this node for editing',
+        onclick: e => { e.stopPropagation(); S.sel = { kind: 'node', id: n.id }; render(); },
+      }, 'edit'));
       tools.append(el('button', {
         title: 'delete this node',
         onclick: e => { e.stopPropagation(); confirmDelete(n, children); },

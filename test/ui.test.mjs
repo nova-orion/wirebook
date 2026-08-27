@@ -40,7 +40,7 @@ function makeDom(settingsYaml) {
     addEventListener() {} removeEventListener() {}
     setPointerCapture() {}
     focus() {} blur() {} select() {} setSelectionRange() {} click() {}
-    showModal() { this.open = true; } close() { this.open = false; }
+    showModal() { this.open = true; } show() { this.open = true; } close() { this.open = false; }
     querySelector() { return null; }
     querySelectorAll() { return []; }
     cloneNode() { return new N(this.tagName); }
@@ -51,7 +51,8 @@ function makeDom(settingsYaml) {
   const byId = {};
   for (const id of ['hFile', 'hDirty', 'hStat', 'hProb', 'bOpen', 'bSave', 'bUndo',
                     'bRedo', 'bLink', 'nav', 'view', 'menubar', 'dlg', 'dlgHead',
-                    'dlgBody', 'dlgFoot', 'toast', 'banner']) byId[id] = new N();
+                    'dlgBody', 'dlgFoot', 'nodeDlg', 'nodeHead', 'nodeBody',
+                    'nodeFoot', 'toast', 'banner']) byId[id] = new N();
   byId.builtinSettings = new N('script');
   byId.builtinSettings.textContent = settingsYaml;
 

@@ -153,8 +153,9 @@ await test('every node detail page renders with no errors', async () => {
   const ids = await page.evaluate(() => S.inv.nodes.map(n => n.id));
   for (const id of ids) {
     await page.evaluate(i => { S.sel = { kind: 'node', id: i }; render(); }, id);
-    const h = await page.textContent('#view h2');
-    assert.ok(h && h.trim().length, 'node ' + id + ' rendered no heading');
+    await page.waitForTimeout(20);
+    const h = await page.textContent('#nodeBody h2');
+    assert.ok(h && h.trim().length, 'node ' + id + ' rendered no heading in the dialog');
   }
   noErrs(page);
   await page.ctx.close();
@@ -167,19 +168,19 @@ await test('every node detail page renders with no errors', async () => {
 
 const NODE = 'compute/srv-1';
 // the meta picker is a filterable combo now, not a native select
-const PICKER = '#view .metapick input';
+const PICKER = '#nodeBody .metapick input';
 // type the field id, then take the first match
 const addField = async (page, id) => {
   const box = page.locator(PICKER);
   await box.click();
   await box.fill(id);
   // by value, not "the first match": typing "serial" also matches "Serial console"
-  await page.locator(`#view .metapick .combomenu .opt[data-value="${id}"]`).click();
+  await page.locator(`#nodeBody .metapick .combomenu .opt[data-value="${id}"]`).click();
   await page.waitForTimeout(60);
 };
 const openNodeWithMeta = async page => {
   await page.evaluate(id => { S.sel = { kind: 'node', id }; render(); }, NODE);
-  await page.waitForSelector(PICKER);
+  await page.waitForSelector(PICKER);   // the editor is a dialog now
 };
 
 // The picker only offers fields that are NOT already set, so a test must ask
@@ -200,7 +201,7 @@ const offered = page => page.evaluate(id => {
 const firstOfType = (avail, type) => Object.keys(avail).find(id => avail[id].type === type);
 const metaKeys = page => page.evaluate(id =>
   Object.keys((S.inv.nodes.find(n => n.id === id).meta) || {}), NODE);
-const row = (page, key) => page.locator(`#view .metarow[data-key="${key}"]`);
+const row = (page, key) => page.locator(`#nodeBody .metarow[data-key="${key}"]`);
 
 await test('choosing a field from the picker adds a visible row', async () => {
   const page = await open();
@@ -258,12 +259,12 @@ await test('the field picker filters as you type', async () => {
 
   const box = page.locator(PICKER);
   await box.click();
-  const all = await page.locator('#view .metapick .combomenu .opt').count();
+  const all = await page.locator('#nodeBody .metapick .combomenu .opt').count();
   assert.ok(all > 20, 'the picker is not offering the shipped fields, saw ' + all);
 
   await box.fill('volts');
   await page.waitForTimeout(60);
-  const hits = await page.locator('#view .metapick .combomenu .opt').allTextContents();
+  const hits = await page.locator('#nodeBody .metapick .combomenu .opt').allTextContents();
   assert.ok(hits.length > 0 && hits.length < all, 'typing did not narrow the list');
   assert.ok(hits.every(h => /volt/i.test(h)), 'the filter kept unrelated fields: ' + hits.join(','));
   noErrs(page);
@@ -275,13 +276,13 @@ await test('long dropdowns are filterable, short ones stay native', async () => 
   await load(page);
   // the parent picker lists every node, so it must be searchable
   await page.evaluate(() => { S.sel = { kind: 'node', id: 'compute/srv-1' }; render(); });
-  const parent = page.locator('#view label:text-is("parent") + div .combo input');
+  const parent = page.locator('#nodeBody label:text-is("parent") + div .combo input');
   assert.equal(await parent.count(), 1, 'the parent picker is not a filterable combo');
   // dir has three options and is better off as a plain select
   await page.evaluate(() => {
     S.openPorts = new Set(['compute/srv-1:eth0']); render();
   });
-  assert.ok(await page.locator('#view select').count() > 0, 'short lists should stay native selects');
+  assert.ok(await page.locator('#nodeBody select').count() > 0, 'short lists should stay native selects');
   noErrs(page);
   await page.ctx.close();
 });
@@ -291,7 +292,7 @@ await test('+ ad hoc key adds a row you can rename and fill', async () => {
   await load(page);
   await openNodeWithMeta(page);
 
-  await page.click('#view button:text-is("+ ad hoc key")');
+  await page.click('#nodeBody button:text-is("+ ad hoc key")');
   await row(page, 'custom').waitFor({ timeout: 3000 });
   assert.ok((await metaKeys(page)).includes('custom'), 'ad hoc key not in the model');
 
@@ -439,7 +440,7 @@ await test('a field you declare can carry a note, and it persists', async () => 
   await openNodeWithMeta(page);
 
   // an ad hoc key, then declare it with a note
-  await page.click('#view button:text-is("+ ad hoc key")');
+  await page.click('#nodeBody button:text-is("+ ad hoc key")');
   await row(page, 'custom').waitFor({ timeout: 3000 });
   await row(page, 'custom').locator('button:text-is("declare")').click();
   await page.waitForSelector('#dlgBody textarea');
@@ -543,7 +544,7 @@ await test('a port can be marked reserved from the editor', async () => {
   });
   // the control now sits in a wrapper div alongside its help line, so the
   // label's sibling is that div rather than the input itself
-  const res = page.locator('#view label:text-is("reserved for") + div input');
+  const res = page.locator('#nodeBody label:text-is("reserved for") + div input');
   assert.equal(await res.count(), 1, 'there is no reserved control in the port editor');
   await res.fill('second NAS uplink');
   await res.dispatchEvent('change');
@@ -553,7 +554,7 @@ await test('a port can be marked reserved from the editor', async () => {
   assert.match(yaml, /reserved: second NAS uplink/, 'reserved did not reach the file');
   // and it must be visible without opening the detail row
   await page.evaluate(() => { S.openPorts = new Set(); render(); });
-  assert.match(await page.textContent('#view'), /reserved/, 'reserved is invisible in the port list');
+  assert.match(await page.textContent('#nodeBody'), /reserved/, 'reserved is invisible in the port list');
   await page.ctx.close();
 });
 
@@ -634,7 +635,7 @@ await test('a full port offers to take another cable', async () => {
   await load(page);
   // compute/srv-1:eth0 is cabled to net/sw-1:p1 in the fixture
   await page.evaluate(() => { S.sel = { kind: 'node', id: 'compute/srv-1' }; render(); });
-  const rowFull = page.locator('#view tr', { has: page.locator('input[value="eth0"]') });
+  const rowFull = page.locator('#nodeBody tr', { has: page.locator('input[value="eth0"]') });
   await rowFull.waitFor({ timeout: 3000 });
 
   const btn = rowFull.locator('button:text-is("+ another cable")');
@@ -677,7 +678,7 @@ await test('fanout is visible on the port row once set', async () => {
     p.fanout = 3;
     S.sel = { kind: 'node', id: 'compute/srv-1' }; render();
   });
-  assert.match(await page.textContent('#view'), /fanout 3/,
+  assert.match(await page.textContent('#nodeBody'), /fanout 3/,
     'fanout is set but never shown, so it stays invisible behind the more toggle');
   await page.ctx.close();
 });
@@ -691,12 +692,12 @@ await test('typing fanout immediately offers the extra connections', async () =>
     S.openPorts = new Set(['compute/srv-1:eth0']);
     render();
   });
-  const rowSel = '#view tr:has(input[value="eth0"])';
+  const rowSel = '#nodeBody tr:has(input[value="eth0"])';
   const buttons = () => page.locator(rowSel).first().locator('button').allTextContents();
   assert.ok(!(await buttons()).includes('connect'), 'a port at capacity should not offer connect');
 
   // raise fanout the way a user does, by typing in the box
-  const fan = page.locator('#view label:text-is("fanout") + div input');
+  const fan = page.locator('#nodeBody label:text-is("fanout") + div input');
   await fan.fill('3');
   await fan.dispatchEvent('change');
   await page.waitForTimeout(120);
@@ -785,6 +786,44 @@ await test('dropping on the strip moves a node to the top level', async () => {
   await page.ctx.close();
 });
 
+await test('tree rows highlight and tie their buttons to the row', async () => {
+  const page = await open();
+  await load(page);
+  await nav(page, 'Tree');
+  const row = treeRow(page, 'compute/srv-1');
+  await row.waitFor({ timeout: 3000 });
+
+  // the buttons used to sit at the far right of a wide window with nothing
+  // connecting them to the row they act on
+  const geom = await page.evaluate(() => {
+    const r = document.querySelector('[data-node-id="compute/srv-1"]');
+    const t = r.querySelector('.treetools');
+    return {
+      rowRight: Math.round(r.getBoundingClientRect().right),
+      toolsRight: Math.round(t.getBoundingClientRect().right),
+      toolsLeft: Math.round(t.getBoundingClientRect().left),
+      textRight: Math.round(Math.max(...[...r.children]
+        .filter(c => !c.classList.contains('treetools'))
+        .map(c => c.getBoundingClientRect().right))),
+      paneRight: Math.round(document.querySelector('section').getBoundingClientRect().right),
+      before: getComputedStyle(r).backgroundColor,
+    };
+  });
+  assert.ok(geom.paneRight - geom.toolsRight > 100,
+    'the row tools still run to the far edge of the pane');
+  // and they sit right after the row's own text, not in a lane of their own
+  assert.ok(geom.toolsLeft - geom.textRight < 40,
+    `the tools are ${geom.toolsLeft - geom.textRight}px adrift of the row content`);
+
+  await row.hover();
+  await page.waitForTimeout(60);
+  const after = await page.evaluate(() =>
+    getComputedStyle(document.querySelector('[data-node-id="compute/srv-1"]')).backgroundColor);
+  assert.notEqual(after, geom.before, 'the row does not highlight on hover');
+  noErrs(page);
+  await page.ctx.close();
+});
+
 await test('deleting from the tree warns what else goes, then removes it', async () => {
   const page = await open();
   await load(page);
@@ -815,38 +854,44 @@ await test('deleting from the tree warns what else goes, then removes it', async
   await page.ctx.close();
 });
 
-await test('ctrl+click peeks without leaving the tree', async () => {
+await test('opening a node keeps the view behind it and can edit in place', async () => {
   const page = await open();
   await load(page);
   await nav(page, 'Tree');
   await treeRow(page, 'compute/srv-1').waitFor({ timeout: 3000 });
-
-  await treeRow(page, 'compute/srv-1').locator('a').click({ modifiers: ['Control'] });
-  await page.waitForTimeout(80);
-
-  // still on the tree, with a dialog showing the node
-  assert.equal(await page.evaluate(() => S.sel.id), 'tree', 'ctrl+click navigated away from the tree');
-  assert.equal(await page.evaluate(() => document.getElementById('dlg').open), true, 'no peek dialog');
-  const dlg = await page.textContent('#dlgBody');
-  assert.match(dlg, /compute\/srv-1/, 'the peek does not identify the node');
-  assert.match(dlg, /eth0/, 'the peek does not list the ports');
-
-  // and "Open fully" does navigate
-  await page.click('#dlgFoot button:text-is("Open fully")');
-  await page.waitForTimeout(80);
-  assert.equal(await page.evaluate(() => S.sel.kind), 'node', 'Open fully did not navigate');
-  noErrs(page);
-  await page.ctx.close();
-});
-
-await test('a plain click in the tree still navigates', async () => {
-  const page = await open();
-  await load(page);
-  await nav(page, 'Tree');
   await treeRow(page, 'compute/srv-1').locator('a').click();
-  await page.waitForTimeout(80);
-  const sel = await page.evaluate(() => ({ ...S.sel }));
-  assert.deepEqual(sel, { kind: 'node', id: 'compute/srv-1' }, 'plain click broke');
+  await page.waitForTimeout(120);
+
+  // it is the FULL editor, not a read-only summary: there is one node editor
+  assert.equal(await page.evaluate(() => document.getElementById('nodeDlg').open), true, 'no dialog');
+  const dlg = await page.textContent('#nodeBody');
+  assert.match(dlg, /compute\/srv-1/, 'the dialog does not identify the node');
+  assert.equal(await page.locator('#nodeBody input[value="eth0"]').count(), 1,
+    'the dialog does not list the ports');
+  assert.ok(await page.locator('#nodeBody .metapick input').count() > 0, 'no meta editor in the dialog');
+  assert.ok(await page.locator('#nodeBody label:text-is("parent")').count() > 0, 'no parent picker');
+
+  // the view you were reading is still underneath, and the URL still addresses
+  // the node so a deep link and the back button keep working
+  assert.equal(await page.evaluate(() => S.lastView), 'tree', 'the tree was replaced rather than kept');
+  assert.match(await page.evaluate(() => location.hash), /#node\/compute\/srv-1/, 'the url lost the node');
+
+  // an edit made in the dialog sticks, and the dialog stays open
+  const lab = page.locator('#nodeBody label:text-is("label") + div input');
+  await lab.fill('Edited in the dialog');
+  await lab.dispatchEvent('change');
+  await page.waitForTimeout(120);
+  assert.equal(await page.evaluate(() =>
+    S.inv.nodes.find(n => n.id === 'compute/srv-1').label), 'Edited in the dialog', 'the edit was lost');
+  assert.equal(await page.evaluate(() => document.getElementById('nodeDlg').open), true,
+    'the dialog closed on the first edit');
+
+  // closing puts you back where you were
+  await page.click('#nodeFoot button:text-is("Done")');
+  await page.waitForTimeout(120);
+  assert.deepEqual(await page.evaluate(() => ({ ...S.sel })), { kind: 'view', id: 'tree' },
+    'closing did not restore the view');
+  noErrs(page);
   await page.ctx.close();
 });
 
@@ -910,7 +955,7 @@ await test('every labelled control carries its own help', async () => {
     await page.evaluate(f => eval('(' + f + ')')(), fn.toString());
     const rows = await page.evaluate(() => {
       const out = [];
-      for (const lab of document.querySelectorAll('#view .grid2 > label')) {
+      for (const lab of document.querySelectorAll('#nodeBody .grid2 > label')) {
         const control = lab.nextElementSibling;
         out.push({
           label: (lab.textContent || '').trim(),
@@ -932,7 +977,7 @@ await test('the declare dialog explains each box and previews the control', asyn
   const page = await open();
   await load(page);
   await openNodeWithMeta(page);
-  await page.click('#view button:text-is("+ ad hoc key")');
+  await page.click('#nodeBody button:text-is("+ ad hoc key")');
   await row(page, 'custom').waitFor({ timeout: 3000 });
   await row(page, 'custom').locator('button:text-is("declare")').click();
   await page.waitForSelector('#dlgBody .grid2');
@@ -959,7 +1004,7 @@ await test('a composite field cannot be declared with no parts', async () => {
   const page = await open();
   await load(page);
   await openNodeWithMeta(page);
-  await page.click('#view button:text-is("+ ad hoc key")');
+  await page.click('#nodeBody button:text-is("+ ad hoc key")');
   await row(page, 'custom').waitFor({ timeout: 3000 });
   await row(page, 'custom').locator('button:text-is("declare")').click();
   await page.waitForSelector('#dlgBody .grid2');
@@ -1001,7 +1046,7 @@ await test('a composite field cannot be declared with no parts', async () => {
     const n = S.inv.nodes.find(x => x.id === 'compute/srv-1');
     n.meta = { ...(n.meta || {}), box_size: {} };
     S.sel = { kind: 'node', id: n.id }; render();
-    const r = document.querySelector('#view .metarow[data-key="box_size"]');
+    const r = document.querySelector('#nodeBody .metarow[data-key="box_size"]');
     return r ? r.querySelectorAll('input').length : -1;
   });
   assert.ok(rendered > 0, 'the declared composite renders no input at all');
@@ -1394,6 +1439,60 @@ await test('a malformed file is refused with a message, not a crash', async () =
     assert.ok(/bogus_key|could not|unknown|refus/i.test(shown),
       'nothing on screen explained the refusal: ' + JSON.stringify(shown.slice(0, 200)));
   } finally { fs.rmSync(bad, { force: true }); }
+  await page.ctx.close();
+});
+
+await test('the demo inventory loads, renders and shows what it advertises', async () => {
+  const page = await open();
+  await load(page, 'inventory.demo.yaml');
+
+  // it ships to users as the thing to poke at, so every view has to work
+  for (const v of ['Problems', 'Free ports', 'Cables', 'Tree', 'Graph', 'VLANs', 'YAML', 'Settings']) {
+    await nav(page, v);
+    assert.ok((await page.textContent('#view')).trim().length > 50, v + ' rendered almost nothing');
+  }
+
+  // and it must demonstrate the things the README says it does
+  await nav(page, 'Free ports');
+  const free = await page.textContent('#view');
+  assert.match(free, /1 of 2 free/, 'the fanout socket does not show a spare slot');
+  assert.match(free, /blocked/i, 'no blocked outlet');
+  assert.match(free, /reserved/i, 'no reserved port');
+
+  const facts = await page.evaluate(() => ({
+    planned: S.inv.links.filter(l => l.planned).length,
+    poe: S.inv.links.filter(l => l.poe).length,
+    carries: S.inv.links.filter(l => l.meta && l.meta.carries).length,
+    virtual: S.inv.nodes.filter(n => n.virtual).length,
+    nested: S.inv.nodes.filter(n => {
+      const p = S.inv.nodes.find(x => x.id === n.parent);
+      return p && p.type !== 'location';
+    }).length,
+    warns: Core.validate(S.inv, FIELD_BY_ID).filter(p => p.warn).length,
+    errs: Core.validate(S.inv, FIELD_BY_ID).filter(p => !p.warn).length,
+  }));
+  assert.ok(facts.planned >= 1, 'no planned cable');
+  assert.ok(facts.poe >= 1, 'no PoE run');
+  assert.ok(facts.carries >= 1, 'nothing marked with what it carries');
+  assert.ok(facts.virtual >= 1, 'no virtual guest');
+  assert.ok(facts.nested >= 2, 'nothing nested inside a machine');
+  assert.equal(facts.errs, 0, 'the demo must not ship with errors');
+  assert.equal(facts.warns, 1, 'the demo should carry exactly the one deliberate warning');
+
+  // the chain layout is the default and must actually lay out in steps
+  await nav(page, 'Graph');
+  const cols = await page.evaluate(() =>
+    [...document.querySelectorAll('#view svg text')].map(t => t.textContent)
+      .filter(t => /^(SOURCES|STEP )/.test(t)).length);
+  assert.ok(cols >= 3, 'the chain layout produced ' + cols + ' columns');
+  const boxes = await page.evaluate(() =>
+    document.querySelectorAll('#view svg rect[stroke-dasharray="6 4"]').length);
+  assert.ok(boxes >= 2, 'locations are not drawn as boundaries');
+
+  assert.equal(await page.evaluate(() => currentYaml()),
+    fs.readFileSync(path.join(root, 'inventory.demo.yaml'), 'utf8'),
+    'the demo does not round trip');
+  noErrs(page);
   await page.ctx.close();
 });
 
