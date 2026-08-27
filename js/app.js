@@ -1359,14 +1359,21 @@ function renderSettings(v) {
 // reached with the back button. Node ids contain slashes, which is legal in a
 // fragment, so no encoding games are needed.
 function selToHash(sel) {
-  return sel.kind === 'node' ? '#node/' + sel.id : '#view/' + sel.id;
+  if (sel.kind === 'node') return '#node/' + sel.id;
+  if (sel.kind === 'link') return '#link/' + sel.a + '~' + sel.b;
+  return '#view/' + sel.id;
 }
 function hashToSel(hash) {
   const h = (hash || '').replace(/^#/, '');
   if (h.startsWith('node/')) return { kind: 'node', id: h.slice(5) };
+  if (h.startsWith('link/')) {
+    const [a, b] = h.slice(5).split('~');
+    return a && b ? { kind: 'link', a, b } : null;
+  }
   if (h.startsWith('view/')) return { kind: 'view', id: h.slice(5) };
   return null;
 }
+const linkOf = sel => S.inv.links.find(l => l.a === sel.a && l.b === sel.b);
 
 // pushState, so Back walks back through the views and nodes you visited. This
 // used to be replaceState, on the theory that history entries would make Back
@@ -1396,6 +1403,7 @@ const applyLocation = () => {
   if (!sel) return;
   // a link to a node that is not in this file should say so, not blank the view
   if (sel.kind === 'node' && !nodeById(sel.id)) { toast(sel.id + ' is not in this inventory'); return; }
+  if (sel.kind === 'link' && !linkOf(sel)) { toast('that cable is not in this inventory'); return; }
   if (selToHash(S.sel) === selToHash(sel)) return;
   S.sel = sel;
   render();
@@ -1415,7 +1423,7 @@ function render() {
   // synchronously, so render() actually finishes rendering. Scheduling this in a
   // microtask meant anything that read the DOM right after a render saw the
   // previous contents of the editor.
-  if (S.sel.kind === 'node') paintNodeDialog(ix);
+  if (S.sel.kind === 'node' || S.sel.kind === 'link') paintEditor(ix);
   else if ($('nodeDlg').open) $('nodeDlg').close();
 }
 
@@ -1656,7 +1664,7 @@ function renderView(ix, probs) {
   // A node is edited in a dialog on top of the view you were reading, rather
   // than replacing it. S.sel still addresses the node, so deep links, the back
   // button and "copy link" are unchanged; only where it is drawn moved.
-  const view = S.sel.kind === 'node' ? (S.lastView || 'problems') : S.sel.id;
+  const view = S.sel.kind === 'view' ? S.sel.id : (S.lastView || 'problems');
   if (view === 'problems') return renderProblems(v, probs);
   if (view === 'free') return renderFree(v, ix);
   if (view === 'cables') return renderCables(v, ix);
@@ -2312,6 +2320,37 @@ function renderFree(v, ix) {
   }
 }
 
+// One cable editor, used by the Cables table and by the panel the graph opens.
+// Two copies would drift, and the copy you were looking at would be the one
+// missing the field you wanted.
+function cableEditor(l) {
+  const box = el('div', {});
+  const flag = (key, label, help) => {
+    const c = el('input', { type: 'checkbox' });
+    c.checked = !!l[key];
+    c.onchange = () => { l[key] = c.checked; touched(); };
+    return field(label, c, help);
+  };
+  box.append(el('div', { class: 'grid2' },
+    field('from', el('span', {}, refLink(l.a)), 'One end of the run. Click to open that device.'),
+    field('to', el('span', {}, refLink(l.b)), 'The other end.'),
+    field('label', inline(l, 'label', 200),
+      'What is written on the cable itself. Put it here rather than on both ports, where it would drift.'),
+    flag('poe', 'poe', 'An ethernet run that also carries power, which is how "what feeds the AP" stays answerable.'),
+    flag('planned', 'planned',
+      'Intended but not run. It stays as a reminder without occupying either port, so both ends still count as free.'),
+    field('blocks', el('button', { onclick: () => blocksEditor(l) }, `${l.blocks.length} socket(s)`),
+      'Sockets this connection makes unusable, typically a brick overhanging its neighbour.'),
+    field('note', inline(l, 'note', 300), 'Anything else about this cable.'),
+  ));
+  box.append(el('div', { class: 'faint', style: 'margin:10px 0 4px' }, 'cable meta'));
+  box.append(rawHint('Facts about the cable itself, not about either end. <b>carries</b> is the one to reach for '
+    + 'when the connector cannot say what a lead does: a USB lead may be power, data or both, and the graph '
+    + 'buckets it accordingly instead of filing a charger next to HDMI.'));
+  box.append(metaEditor(l, 'link'));
+  return box;
+}
+
 function renderCables(v, ix) {
   v.append(el('h2', {}, 'Cables'));
   v.append(rawHint(
@@ -2360,12 +2399,8 @@ function renderCables(v, ix) {
         }, '×')),
       );
       if (!open) return [main];
-      const detail = el('tr', {}, el('td', { colspan: 9, style: 'padding:8px 0 14px 12px' },
-        rawHint('Facts about the cable itself, not about either end. <b>carries</b> is the one to reach for '
-          + 'when the connector cannot say what a lead does: a USB lead may be power, data or both, and the '
-          + 'graph buckets it accordingly instead of filing a charger next to HDMI.'),
-        metaEditor(l, 'link')));
-      return [main, detail];
+      return [main, el('tr', {}, el('td', { colspan: 9, style: 'padding:8px 0 14px 12px' },
+        cableEditor(l)))];
     }).flat();
   v.append(el('table', {},
     el('thead', {}, el('tr', {},
@@ -2472,7 +2507,31 @@ function renderVlans(v) {
       const main = el('tr', {},
         el('td', {}, idIn),
         el('td', {}, inline(vl, 'name', 110)),
-        el('td', {}, inline(vl, 'subnet', 130)),
+        el('td', {}, (() => {
+          // one row per prefix: dual stack means at least two, and a ULA and a
+          // GUA alongside the v4 range means four is ordinary
+          const box = el('div', {});
+          const paint = () => {
+            box.replaceChildren();
+            const list = vl.subnets || [];
+            for (const [i, sn] of list.entries()) {
+              const inp = el('input', { value: sn, style: 'width:190px' });
+              inp.onchange = () => {
+                const next = inp.value.trim();
+                if (next) vl.subnets[i] = next;
+                else vl.subnets.splice(i, 1);
+                touched();
+              };
+              box.append(el('div', { style: 'display:flex;gap:4px;margin-bottom:3px' }, inp,
+                el('button', { title: 'remove this prefix', onclick: () => { vl.subnets.splice(i, 1); touched(); } }, '×')));
+            }
+            box.append(el('button', {
+              onclick: () => { vl.subnets = [...(vl.subnets || []), '']; paint(); },
+            }, '+ prefix'));
+          };
+          paint();
+          return box;
+        })()),
         el('td', {}, inline(vl, 'note', 170)),
         el('td', { class: 'faint' }, users.length ? `${users.length} port${users.length > 1 ? 's' : ''}` : 'unused'),
         el('td', {},
@@ -2494,14 +2553,14 @@ function renderVlans(v) {
         metaEditor(vl, 'vlan')))];
     }).flat();
     v.append(el('table', {},
-      el('thead', {}, el('tr', {}, ...['id', 'name', 'subnet', 'note', 'used by', 'detail', ''].map(h => el('th', {}, h)))),
+      el('thead', {}, el('tr', {}, ...['id', 'name', 'subnets', 'note', 'used by', 'detail', ''].map(h => el('th', {}, h)))),
       el('tbody', {}, ...rows)));
   }
   v.append(el('button', {
     style: 'margin-top:10px',
     onclick: () => {
       let id = 10; while (S.inv.vlans.some(x => x.id === id)) id++;
-      S.inv.vlans.push({ id, name: '', subnet: '', note: '', meta: null, src: S.name });
+      S.inv.vlans.push({ id, name: '', subnets: [], note: '', meta: null, src: S.name });
       touched();
     },
   }, '+ vlan'));
@@ -2571,15 +2630,25 @@ async function confirmDelete(n, children) {
 // deep link. Building a second read-only version would be two things to keep in
 // step, and the read-only one would be the wrong one every time you actually
 // wanted to change something.
-function paintNodeDialog(ix) {
-  const n = nodeById(S.sel.id);
+function paintEditor(ix) {
   const dlg = $('nodeDlg');
-  if (!n) { S.sel = { kind: 'view', id: S.lastView || 'problems' }; render(); return; }
-
-  $('nodeHead').textContent = n.label || n.id;
+  const back = () => { S.sel = { kind: 'view', id: S.lastView || 'problems' }; render(); };
   const body = $('nodeBody');
-  body.replaceChildren();
-  renderNode(body, ix || Core.index(S.inv), n);
+
+  if (S.sel.kind === 'link') {
+    const l = linkOf(S.sel);
+    if (!l) { back(); return; }
+    $('nodeHead').textContent = 'Cable';
+    body.replaceChildren();
+    body.append(el('div', { class: 'sub', style: 'margin-bottom:8px' }, l.a + '  <->  ' + l.b));
+    body.append(cableEditor(l));
+  } else {
+    const n = nodeById(S.sel.id);
+    if (!n) { back(); return; }
+    $('nodeHead').textContent = n.label || n.id;
+    body.replaceChildren();
+    renderNode(body, ix || Core.index(S.inv), n);
+  }
 
   $('nodeFoot').replaceChildren(
     el('button', {
@@ -2599,14 +2668,16 @@ function paintNodeDialog(ix) {
 // Closing has to put the selection back, or the URL keeps pointing at a node
 // that is no longer on screen.
 $('nodeDlg').addEventListener('close', () => {
-  if (S.sel.kind === 'node') {
+  if (S.sel.kind === 'node' || S.sel.kind === 'link') {
     S.sel = { kind: 'view', id: S.lastView || 'problems' };
     render();
   }
 });
 // Escape does not close a non-modal dialog by itself.
 window.addEventListener('keydown', e => {
-  if (e.key === 'Escape' && $('nodeDlg').open && !$('dlg').open) $('nodeDlg').close();
+  if (e.key !== 'Escape') return;
+  if (S.gconnect) { S.gconnect = null; render(); return; }
+  if ($('nodeDlg').open && !$('dlg').open) $('nodeDlg').close();
 });
 
 function renderTree(v, ix) {
@@ -2815,7 +2886,12 @@ function renderGraph(v, ix) {
     'sockets of their own. Dashed thick lines carry PoE. ' +
     '<b>Click a cable</b> to trace its run: what feeds it, and what it goes on to feed, with the exact sockets ' +
     'marked and everything else faded. It follows direction, so it will not wander sideways into the other things ' +
-    'sharing the same wall socket. Click it again, or use clear, to stop. <b>Drag</b> to pan, ' +
+    'sharing the same wall socket. <b>Double click</b> a cable to edit it, which is where <code>carries</code> ' +
+    'lives, and a node to open it. Click again, or use clear, to stop tracing.<br>' +
+    '<b>Click a socket</b>, the small dot beside a port name, to start a cable, then click the socket at the other ' +
+    'end. Only compatible, free sockets turn green, so anything you can click is a cable you could really plug in. ' +
+    'Escape cancels. Adding a cable can shift the columns, because the columns are worked out from the cables, so ' +
+    'the new one stays highlighted afterwards. <b>Drag</b> to pan, ' +
     '<b>ctrl+scroll</b> (or pinch) to zoom toward the pointer, <b>click</b> a node to open it. Zoom needs ctrl held so ' +
     'that a plain scroll still moves the page instead of trapping it here.'));
 
@@ -3085,6 +3161,8 @@ function renderGraph(v, ix) {
     // a fat transparent line under the thin one, so a 1.4px cable is clickable
     line.append(svgEl('path', {
       d, fill: 'none', stroke: 'transparent', 'stroke-width': '12',
+      // single click traces the run, double click edits the cable: the same
+      // pairing as a node box, so one gesture means the same thing everywhere
       onclick: e => {
         if (e.stopPropagation) e.stopPropagation();
         S.gpick = null;
@@ -3093,8 +3171,16 @@ function renderGraph(v, ix) {
           : { a: l.a, b: l.b };
         render();
       },
+      ondblclick: e => {
+        if (e.stopPropagation) e.stopPropagation();
+        S.gtrace = { a: l.a, b: l.b };   // keep it lit while you edit it
+        S.sel = { kind: 'link', a: l.a, b: l.b };
+        render();
+      },
     }, svgEl('title', {}, l.a + ' <-> ' + l.b + (l.poe ? ' (PoE)' : '')
-      + (l.label ? ' | ' + l.label : '') + '   (click to trace)')));
+      + (l.label ? ' | ' + l.label : '')
+      + (l.meta && l.meta.carries ? ' | carries ' + l.meta.carries : '')
+      + '   (click to trace, double click to edit)')));
     if (on) {
       // a halo under the traced line so it reads through a crowd of others
       line.append(svgEl('path', {
@@ -3207,13 +3293,47 @@ function renderGraph(v, ix) {
         'font-weight': lit ? '700' : null,
         opacity: dimmed ? '0.4' : '1',
       }, trunc(p.id + (p.label && p.label !== p.id ? ' (' + p.label + ')' : ''), 28)));
+      const ref = n.id + ':' + p.id;
+      const from = S.gconnect ? ix.portByRef.get(S.gconnect) : null;
+      const isFrom = S.gconnect === ref;
+      // while connecting, only sockets you could actually plug into stay lit
+      const ok = from && !isFrom
+        && Core.compatible(from.port, p)
+        && Core.slotsLeft(ix, n.id, p) > 0
+        && !ix.blockedBy.has(ref);
       for (const cx of [x + 5, x + w - 5]) {
         box.append(svgEl('circle', {
-          cx, cy: py, r: lit ? '4' : '2.6',
-          fill: WIRE[p.type] || '#7f8794',
-          stroke: lit ? '#ffffff' : null, 'stroke-width': lit ? '1.4' : null,
-          opacity: dimmed ? '0.4' : '1',
-        }));
+          cx, cy: py, r: (lit || isFrom || ok) ? '4.5' : '2.6',
+          fill: isFrom ? '#ffffff' : (WIRE[p.type] || '#7f8794'),
+          stroke: isFrom ? '#5dd39e' : ok ? '#5dd39e' : lit ? '#ffffff' : null,
+          'stroke-width': (isFrom || ok || lit) ? '1.8' : null,
+          opacity: (S.gconnect && !isFrom && !ok) ? '0.25' : (dimmed ? '0.4' : '1'),
+          style: 'cursor:crosshair',
+          onclick: e => {
+            if (e.stopPropagation) e.stopPropagation();
+            if (!S.gconnect) {
+              S.gconnect = ref;
+              toast('now click the socket at the other end, or press Escape');
+            } else if (isFrom) {
+              S.gconnect = null;                     // clicking it again cancels
+            } else if (ok) {
+              const a = S.gconnect;
+              S.gconnect = null;
+              connect(a, ref);
+              // keep the new cable lit: the columns are worked out from the
+              // cables, so adding one can move things, and you want to see
+              // which line you just made
+              S.gtrace = { a, b: ref };
+              return;
+            } else {
+              toast('not compatible with ' + S.gconnect);
+              return;
+            }
+            render();
+          },
+        }, svgEl('title', {}, ref + (p.reserved ? '  reserved: ' + p.reserved : '')
+          + (S.gconnect ? (isFrom ? '  (click to cancel)' : ok ? '  (click to connect here)' : '  (not compatible)')
+            : '  (click to start a cable)'))));
       }
     });
     g.append(box);
@@ -3280,7 +3400,7 @@ function renderGraph(v, ix) {
 
   root.addEventListener('click', e => {
     // a click that lands on the background, not on a box or a cable
-    if (e.target === root && !moved) { S.gpick = null; S.gtrace = null; render(); }
+    if (e.target === root && !moved) { S.gpick = null; S.gtrace = null; S.gconnect = null; render(); }
   });
 
   let drag = null;
@@ -3347,10 +3467,23 @@ function renderGraph(v, ix) {
   const foot = el('div', { class: 'faint', style: 'margin-top:6px' },
     place.size + ' nodes, ' + links.length + ' cables shown' +
     (S.gfilter === 'all' ? '' : ' (filtered to ' + S.gfilter + ')'));
+  if (S.gconnect) {
+    foot.replaceChildren(
+      el('b', {}, 'connecting from ' + S.gconnect), ' ',
+      el('span', {}, 'click a green socket to finish. Only compatible, free sockets are green.'), ' ',
+      el('button', { onclick: () => { S.gconnect = null; render(); } }, 'cancel'));
+  }
   if (traced.size) {
     foot.append(' · ', el('b', {}, `tracing ${traced.size} cable${traced.size > 1 ? 's' : ''} `
-      + `through ${litNodes.size} node${litNodes.size > 1 ? 's' : ''}`), ' ',
-    el('button', { onclick: () => { S.gtrace = null; render(); } }, 'clear'));
+      + `through ${litNodes.size} node${litNodes.size > 1 ? 's' : ''}`), ' ');
+    if (S.gtrace && linkOf(S.gtrace)) {
+      // a 1.4px line is a small target for a double click, so offer the same
+      // thing as a button
+      foot.append(el('button', {
+        onclick: () => { S.sel = { kind: 'link', a: S.gtrace.a, b: S.gtrace.b }; render(); },
+      }, 'edit this cable'), ' ');
+    }
+    foot.append(el('button', { onclick: () => { S.gtrace = null; render(); } }, 'clear'));
   }
   v.append(foot);
 }

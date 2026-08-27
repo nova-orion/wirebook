@@ -107,11 +107,16 @@ type FieldPart struct {
 // create extra links: one cable stays one cable, and the logical connections
 // riding it are derived from the membership on both ends.
 type Vlan struct {
-	ID     int            `yaml:"id"`
-	Name   string         `yaml:"name"`
-	Subnet string         `yaml:"subnet"`
-	Note   string         `yaml:"note"`
-	Meta   map[string]any `yaml:"meta"`
+	ID   int    `yaml:"id"`
+	Name string `yaml:"name"`
+	// A VLAN carries as many prefixes as it carries. One string could not
+	// express dual stack at all, never mind a ULA and a GUA alongside the v4
+	// range. `subnet` is still read so files written before this keep loading,
+	// and is folded into Subnets on the way in.
+	Subnet  string         `yaml:"subnet"`
+	Subnets []string       `yaml:"subnets"`
+	Note    string         `yaml:"note"`
+	Meta    map[string]any `yaml:"meta"`
 
 	src string
 }
@@ -161,10 +166,13 @@ type document struct {
 // Inventory is every document merged, in file order.
 type Inventory struct {
 	Fields []Field
-	Vlans  []Vlan
-	Nodes  []Node
-	Links  []Link
-	Files  []string
+	// the shipped specs found beside the file, so the typed meta check works on
+	// an inventory that does not embed the specs it uses, which is most of them
+	shipped []Field
+	Vlans   []Vlan
+	Nodes   []Node
+	Links   []Link
+	Files   []string
 }
 
 func main() {
@@ -311,7 +319,7 @@ func load(target string) (*Inventory, error) {
 		paths = []string{target}
 	}
 
-	inv := &Inventory{}
+	inv := &Inventory{shipped: loadShippedFields(target)}
 	for _, path := range paths {
 		// Glob is non-recursive, which is why the schema lives in schema/ rather
 		// than beside the data: it stays out of this list, and out of the
@@ -353,6 +361,43 @@ func load(target string) (*Inventory, error) {
 // absorb merges one parsed document into inv, applying that file's namespace
 // and default parent. Shared by load and by the read-back check in format, so
 // the two can never disagree about what a file means.
+// The shipped field specs, so the CLI type-checks meta the same way the editor
+// does. Looked for beside the inventory first, then beside the binary and in the
+// working directory, so running it from a clone or from an install both work.
+// Missing is not an error: a file that embeds its own specs is self-contained,
+// which is the whole point of embedding them.
+func loadShippedFields(near string) []Field {
+	var dirs []string
+	if near != "" {
+		if info, err := os.Stat(near); err == nil && info.IsDir() {
+			dirs = append(dirs, near)
+		} else {
+			dirs = append(dirs, filepath.Dir(near))
+		}
+	}
+	if exe, err := os.Executable(); err == nil {
+		dirs = append(dirs, filepath.Dir(exe))
+	}
+	dirs = append(dirs, ".")
+	for _, d := range dirs {
+		data, err := os.ReadFile(filepath.Join(d, "settings.yaml"))
+		if err != nil {
+			continue
+		}
+		var doc struct {
+			Fields []Field `yaml:"fields"`
+		}
+		if yaml.Unmarshal(data, &doc) != nil {
+			continue // a broken settings file must not stop the inventory loading
+		}
+		for i := range doc.Fields {
+			doc.Fields[i].src = filepath.Join(d, "settings.yaml")
+		}
+		return doc.Fields
+	}
+	return nil
+}
+
 func absorb(inv *Inventory, doc *document, src string) {
 	ns := doc.Defaults.Namespace
 	for i := range doc.Fields {
@@ -363,6 +408,11 @@ func absorb(inv *Inventory, doc *document, src string) {
 	for i := range doc.Vlans {
 		v := doc.Vlans[i]
 		v.src = src
+		// fold the old single-value form in, so one shape reaches everything else
+		if v.Subnet != "" {
+			v.Subnets = append([]string{v.Subnet}, v.Subnets...)
+			v.Subnet = ""
+		}
 		inv.Vlans = append(inv.Vlans, v)
 	}
 	for i := range doc.Nodes {
@@ -550,12 +600,27 @@ func validate(inv *Inventory) []problem {
 	for i := range inv.Vlans {
 		v := &inv.Vlans[i]
 		ctl(fmt.Sprintf("vlan %d.name", v.ID), v.Name)
-		ctl(fmt.Sprintf("vlan %d.subnet", v.ID), v.Subnet)
+		for j, sn := range v.Subnets {
+			ctl(fmt.Sprintf("vlan %d.subnets[%d]", v.ID, j), sn)
+		}
 		ctl(fmt.Sprintf("vlan %d.note", v.ID), v.Note)
 	}
 
 	// Declared fields, and the typed checks they enable.
+	//
+	// Both the specs embedded in the inventory and the shipped ones. Without the
+	// shipped set this typed check was dead for most files: nothing embeds a spec
+	// it did not customise, so `volts: TODO` and `volts_in: 100-240` passed the
+	// CLI while the editor rightly refused them. Embedded specs win, since those
+	// are the ones the file itself declares.
+	shipped := inv.shipped
 	fields := map[string]*Field{}
+	for i := range shipped {
+		f := &shipped[i]
+		if f.ID != "" {
+			fields[f.ID] = f
+		}
+	}
 	for i := range inv.Fields {
 		f := &inv.Fields[i]
 		if f.ID == "" {
@@ -1066,11 +1131,11 @@ type outPart struct {
 }
 
 type outVlan struct {
-	ID     int            `yaml:"id"`
-	Name   string         `yaml:"name,omitempty"`
-	Subnet string         `yaml:"subnet,omitempty"`
-	Note   string         `yaml:"note,omitempty"`
-	Meta   map[string]any `yaml:"meta,omitempty"`
+	ID      int            `yaml:"id"`
+	Name    string         `yaml:"name,omitempty"`
+	Subnets []string       `yaml:"subnets,omitempty"`
+	Note    string         `yaml:"note,omitempty"`
+	Meta    map[string]any `yaml:"meta,omitempty"`
 }
 
 type outNode struct {
@@ -1183,7 +1248,7 @@ func canonical(inv *Inventory) *outDoc {
 
 	vl := make([]outVlan, 0, len(inv.Vlans))
 	for _, v := range inv.Vlans {
-		vl = append(vl, outVlan{ID: v.ID, Name: v.Name, Subnet: v.Subnet, Note: v.Note, Meta: v.Meta})
+		vl = append(vl, outVlan{ID: v.ID, Name: v.Name, Subnets: v.Subnets, Note: v.Note, Meta: v.Meta})
 	}
 	sort.SliceStable(vl, func(i, j int) bool { return vl[i].ID < vl[j].ID })
 

@@ -1,10 +1,12 @@
 vlans:
   - id: 10
     name: mgmt
-    subnet: 10.0.10.0/24
+    subnets:
+      - 10.0.10.0/24
   - id: 20
     name: iot
-    subnet: 10.0.20.0/24
+    subnets:
+      - 10.0.20.0/24
 nodes:
   - id: compute/a
     pluggables:

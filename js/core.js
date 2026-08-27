@@ -45,7 +45,9 @@ const Core = (() => {
     for (const raw of asList(doc && doc.fields)) inv.fields.push(readField(raw, src));
     for (const raw of asList(doc && doc.vlans)) {
       inv.vlans.push({
-        id: num(raw.id), name: s(raw.name), subnet: s(raw.subnet),
+        id: num(raw.id), name: s(raw.name),
+        subnets: [...(raw.subnet ? [s(raw.subnet)] : []), ...asList(raw.subnets).map(s)]
+          .filter(Boolean),
         note: s(raw.note), meta: cleanMeta(raw.meta), src,
       });
     }
@@ -119,7 +121,7 @@ const Core = (() => {
   const KNOWN = {
     doc: ['defaults', 'fields', 'vlans', 'nodes', 'links'],
     defaults: ['namespace', 'parent'],
-    vlan: ['id', 'name', 'subnet', 'note', 'meta'],
+    vlan: ['id', 'name', 'subnet', 'subnets', 'note', 'meta'],
     field: ['id', 'label', 'type', 'control', 'unit', 'enum', 'open', 'min', 'max',
       'applies_to', 'parts', 'description', 'meta'],
     node: ['id', 'label', 'type', 'virtual', 'hostname', 'parent', 'note', 'meta', 'pluggables'],
@@ -292,7 +294,10 @@ const Core = (() => {
       for (const l of inv.links) checkMeta(specs, `${l.a} <-> ${l.b}`, l.meta, err);
       for (const v of (inv.vlans || [])) checkMeta(specs, `vlan ${v.id}`, v.meta, err);
     }
-    for (const v of (inv.vlans || [])) for (const f of ['name', 'subnet', 'note']) ctlCheck(`vlan ${v.id}.${f}`, v[f]);
+    for (const v of (inv.vlans || [])) {
+      for (const f of ['name', 'note']) ctlCheck(`vlan ${v.id}.${f}`, v[f]);
+      for (const [i, sn] of (v.subnets || []).entries()) ctlCheck(`vlan ${v.id}.subnets[${i}]`, sn);
+    }
 
     const nodes = new Map();
     for (const n of inv.nodes) {
@@ -485,7 +490,7 @@ const Core = (() => {
       doc.vlans = inv.vlans.slice().sort((x, y) => x.id - y.id).map(v => {
         const o = { id: v.id };
         if (v.name) o.name = v.name;
-        if (v.subnet) o.subnet = v.subnet;
+        if ((v.subnets || []).length) o.subnets = v.subnets;
         if (v.note) o.note = v.note;
         if (v.meta) o.meta = v.meta;
         return o;

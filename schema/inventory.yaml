@@ -136,7 +136,17 @@ $defs:
     properties:
       id: {type: integer, minimum: 0, maximum: 4094}
       name: {type: string, description: "Short name, e.g. mgmt or iot"}
-      subnet: {type: string, description: "e.g. 10.0.20.0/24"}
+      subnet:
+        type: string
+        description: >-
+          Deprecated single form, still read. `inv fmt` folds it into `subnets`.
+      subnets:
+        type: array
+        items: {type: string}
+        description: >-
+          Every prefix this VLAN carries, e.g. 10.0.20.0/24 plus a ULA and a GUA.
+          A list because dual stack is normal and one network routinely has more
+          than one v6 prefix.
       note: {type: string}
       meta: {$ref: "#/$defs/meta"}
 

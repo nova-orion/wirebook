@@ -1,10 +1,22 @@
 vlans:
   - id: 10
     name: trusted
+    subnets:
+      - 10.0.10.0/24
+      - fd00:5389:32:10::/64
+      - 2400:adc5:11a:b410::/64
+    note: dual stack, ULA and GUA alongside the v4 range
   - id: 20
     name: iot
+    subnets:
+      - 10.0.20.0/24
+      - 10.0.21.0/24
+      - fd00:5389:32:20::/64
+    note: the second v4 range is an alias on the same interface
   - id: 30
     name: mgmt
+    subnets:
+      - 10.0.30.0/24
 nodes:
   - id: compute/guest-dns
     label: dns

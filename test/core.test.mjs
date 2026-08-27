@@ -415,11 +415,16 @@ test('core has no DOM dependency', () => {
 });
 
 test('every asset is local, so file:// still works', () => {
-  const srcs = [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map(m => m[1]);
-  assert.ok(srcs.length >= 4, `expected css + 3 scripts, found ${srcs.length}`);
-  for (const s of srcs) {
+  // Only things the page FETCHES. A hyperlink to the project on GitHub is not an
+  // asset: nothing is loaded from it, so it cannot break opening this offline.
+  const loads = [...html.matchAll(/<(script|link|img|iframe)\b[^>]*?(?:src|href)="([^"]+)"/g)]
+    .map(m => m[2]);
+  assert.ok(loads.length >= 4, `expected css + 3 scripts, found ${loads.length}`);
+  for (const s of loads) {
     assert.ok(!/^(https?:)?\/\//.test(s), `${s} is remote; the app must work offline`);
   }
+  // and no stylesheet or font smuggled in through an @import either
+  assert.ok(!/@import\s+url\(\s*['"]?https?:/.test(html), 'remote @import breaks offline use');
   // ES modules are CORS-blocked over file://, so classic scripts only
   assert.ok(!/<script[^>]+type="module"/.test(html), 'no ES modules: they break file://');
 });

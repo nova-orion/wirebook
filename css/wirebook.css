@@ -37,6 +37,11 @@ header .file { color: var(--dim); }
 header .dot { color: var(--warn); }
 header .spacer { flex: 1; }
 header .stat { color: var(--dim); }
+header .gh {
+  color: var(--dim); text-decoration: none; padding: 3px 7px;
+  border: 1px solid var(--line); border-radius: 4px;
+}
+header .gh:hover { color: var(--fg); border-color: var(--accent); text-decoration: none; }
 .pill { padding: 1px 6px; border-radius: 9px; border: 1px solid var(--line); }
 .pill.err { color: var(--err); border-color: #5a3134; }
 .pill.warn { color: var(--warn); border-color: #55442a; }

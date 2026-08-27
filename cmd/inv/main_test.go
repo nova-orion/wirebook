@@ -263,6 +263,38 @@ nodes:
 	}
 }
 
+func TestShippedFieldSpecsTypeCheckMeta(t *testing.T) {
+	// The typed meta check was dead for almost every file: `fields` came only
+	// from specs embedded in the inventory, and nothing embeds a spec it did not
+	// customise, so `volts: TODO` sailed past the CLI while the editor, which
+	// loads settings.yaml, refused it. The two must agree.
+	dir := t.TempDir()
+	settings := filepath.Join(dir, "settings.yaml")
+	if err := os.WriteFile(settings, []byte(
+		"fields:\n  - { id: volts, label: Volts, type: number, unit: V }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "inventory.yaml")
+	if err := os.WriteFile(path, []byte(
+		"nodes:\n  - id: a\n    meta:\n      volts: TODO\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	in, err := load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errs, _ := split(in)
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e, "volts should be a number") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("a non-numeric value in a numeric shipped field must be an error, got %v", errs)
+	}
+}
+
 func TestFreeReportsRemainingFanoutSlots(t *testing.T) {
 	// `free` marked a port used as soon as it carried one cable, so a socket with
 	// fanout 2 and one plug in it vanished from the report and there was no way

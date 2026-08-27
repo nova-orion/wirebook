@@ -715,6 +715,47 @@ await test('typing fanout immediately offers the extra connections', async () =>
   await page.ctx.close();
 });
 
+await test('a VLAN takes as many prefixes as it carries', async () => {
+  const page = await open();
+  await load(page, 'inventory.demo.yaml');
+  await nav(page, 'VLANs');
+  const headers = await page.locator('#view th').allTextContents();
+  assert.ok(headers.includes('subnets'), 'no subnets column: ' + headers.join(','));
+
+  // dual stack is normal, and one network routinely has a ULA and a GUA on top
+  // of the v4 range, so a single string could never have expressed it
+  const before = await page.evaluate(() => S.inv.vlans.find(v => v.id === 10).subnets.length);
+  assert.ok(before >= 3, 'the demo should show a dual stack VLAN, got ' + before);
+
+  const row = page.locator('#view tbody tr', { has: page.locator('input[value="10"]') }).first();
+  await row.locator('button:text-is("+ prefix")').click();
+  await page.waitForTimeout(60);
+  const box = row.locator('input[style*="190px"]').last();
+  await box.fill('10.0.11.0/24');
+  await box.dispatchEvent('change');
+  await page.waitForTimeout(80);
+
+  const after = await page.evaluate(() => S.inv.vlans.find(v => v.id === 10).subnets);
+  assert.equal(after.length, before + 1, 'the extra prefix was not kept');
+  assert.ok(after.includes('10.0.11.0/24'), 'the value was lost: ' + after.join(','));
+  assert.match(await page.evaluate(() => currentYaml()), /10\.0\.11\.0\/24/, 'it did not reach the file');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('the old single subnet key still loads and is migrated', async () => {
+  const page = await open();
+  const got = await page.evaluate(() => {
+    ingest('vlans:\n  - {id: 7, subnet: 10.0.7.0/24}\nnodes: []\n', 'old.yaml');
+    return { subnets: S.inv.vlans[0].subnets, out: currentYaml() };
+  });
+  assert.deepEqual(got.subnets, ['10.0.7.0/24'], 'the old key was dropped');
+  assert.match(got.out, /subnets:/, 'it should be written back in the list form');
+  assert.ok(!/^\s*subnet:/m.test(got.out), 'the deprecated key should not be written back');
+  noErrs(page);
+  await page.ctx.close();
+});
+
 /* ------------------------------------------------------ tree editing ------- */
 
 const treeRow = (page, id) => page.locator(`#view [data-node-id="${id}"]`);
