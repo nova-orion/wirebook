@@ -259,11 +259,32 @@ async function writeHandle(h, text) {
 // Why this page cannot write to a file, in the user's terms. Silently falling
 // back to a download every time, with no explanation, reads as the save button
 // being broken.
+// Three different causes, three different fixes, and telling someone to "use
+// https" when they are already on https reads as the page being broken twice
+// over. Brave in particular is served by https and still withholds the API.
 function whyNoFileWrite() {
   if (canFS) return '';
-  return location.protocol === 'file:'
-    ? 'This page was opened straight off disk as a file:// URL, and browsers do not let those write files.'
-    : 'This page is not on a secure origin, and browsers only allow writing files from https or localhost.';
+  if (location.protocol === 'file:') {
+    return 'This page was opened straight off disk as a file:// URL, and browsers do not let those'
+      + ' write files. Serving the folder over http://localhost or https is enough to fix it.';
+  }
+  if (!window.isSecureContext) {
+    return 'This page is not on a secure origin, and browsers only allow writing files from https'
+      + ' or localhost. Over https, Open once gives the page permission to that one file, and'
+      + ' Save then overwrites it in place.';
+  }
+  // Secure origin and the API is still missing, so the browser is withholding it.
+  if (navigator.brave) {
+    return 'Brave ships with the File System Access API turned off. Turn it on at'
+      + ' brave://flags/#file-system-access-api, reload this page, and then use Open once so'
+      + ' Brave gives the page permission to that file. Save will write to it in place after that.';
+  }
+  if (/Firefox\//.test(navigator.userAgent)) {
+    return 'Firefox does not implement the File System Access API, so no page can write to a file'
+      + ' in place there. Chrome, Edge and Brave (with the flag on) can.';
+  }
+  return 'This browser does not offer the File System Access API, so no page here can write to a'
+    + ' file in place. Chrome, Edge and Brave (with the flag on) can.';
 }
 
 function download(text) {
@@ -278,14 +299,11 @@ function download(text) {
   if (!canFS && !download.explained) {
     download.explained = true;
     alertDlg('Saved as a download',
-      whyNoFileWrite()
-      + ' So Save has put the file in your downloads folder instead, and the copy you opened is untouched.'
-      + ' To overwrite the file in place, open this editor over https, then use Open once so the browser'
-      + ' gives the page permission to that file.');
+      'Save has put the file in your downloads folder, and the copy you opened is untouched. '
+      + whyNoFileWrite());
   } else {
     toast('downloaded ' + S.name);
   }
-  toast('downloaded to your downloads folder, dirty flag kept');
 }
 
 /* ---- dialogs ------------------------------------------------------------ */
@@ -867,7 +885,10 @@ function unitSuffix(spec) {
 }
 
 /* ---- meta editor, driven by field specs --------------------------------- */
-function metaEditor(holder, scope) {
+// `skip` is for keys that already have a control of their own above, so a cable
+// colour is not offered twice with two different widgets.
+function metaEditor(holder, scope, skip) {
+  const hide = new Set(skip || []);
   const wrap = el('div', {});
   const meta = holder.meta || {};
   // An empty value must NOT mean delete. Adding a key creates it empty so the
@@ -887,6 +908,7 @@ function metaEditor(holder, scope) {
 
   const rows = el('div', {});
   for (const k of Object.keys(meta).sort()) {
+    if (hide.has(k)) continue;
     const spec = FIELD_BY_ID.get(k);
     // class and data-key are load bearing for the browser tests: they let a test
     // address one meta row exactly instead of guessing at its label text.
@@ -937,7 +959,7 @@ function metaEditor(holder, scope) {
   // scrolling a native dropdown to find "volts_out" is miserable. Type to filter,
   // Enter takes the first match.
   const avail = specsFor(scope)
-    .filter(f => !(f.id in meta))
+    .filter(f => !(f.id in meta) && !hide.has(f.id))
     .sort((a, b) => (a.label < b.label ? -1 : 1));
   const label = id => {
     if (!id) return avail.length ? '+ add field…' : 'all fields set';
@@ -1590,9 +1612,13 @@ function renderNav(ix) {
   });
   find.oninput = () => {
     S.navQ = find.value;
-    renderNav(ix);
+    // A full render, not just the sidebar. The filter applies to every view now,
+    // and repainting only the nav left the graph and the tree showing the old
+    // set until you switched away and back.
+    const caret = find.selectionStart;
+    render();
     const box = $('nav').querySelector('input');
-    if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
+    if (box) { box.focus(); box.setSelectionRange(caret, caret); }
   };
   nav.append(find);
   // matches id, label, hostname, or any ip, so pasting an address from a DHCP
@@ -2456,43 +2482,93 @@ function cableEditor(l) {
     field('blocks', el('button', { onclick: () => blocksEditor(l) }, `${l.blocks.length} socket(s)`),
       'Sockets this connection makes unusable, typically a brick overhanging its neighbour.'),
     field('note', inline(l, 'note', 300), 'Anything else about this cable.'),
+    field('colour', colourCell(l),
+      'What colour the cable actually is, which is how you find it behind the desk. '
+      + 'The graph draws it in this when the browser recognises the value. Colours already '
+      + 'used are offered, so the second blue one is spelled like the first.'),
     field('tags', tagEditor(l), 'Same tags as everything else: patch, temporary, to-replace.'),
   ));
   box.append(el('div', { class: 'faint', style: 'margin:10px 0 4px' }, 'cable meta'));
   box.append(rawHint('Facts about the cable itself, not about either end. <b>carries</b> is the one to reach for '
     + 'when the connector cannot say what a lead does: a USB lead may be power, data or both, and the graph '
     + 'buckets it accordingly instead of filing a charger next to HDMI.'));
-  box.append(metaEditor(l, 'link'));
+  box.append(metaEditor(l, 'link', ['colour']));
   return box;
 }
 
 // The colour cell: a swatch of whatever was typed, so a value the browser cannot
 // parse is visibly not a colour rather than silently ignored.
+// The hex a browser resolves a colour to, or '' if it does not know it. Needs to
+// be in the document: getComputedStyle on a detached element returns nothing.
+function toHex(v) {
+  const want = String(v || '').trim();
+  if (!want) return '';
+  const probe = el('span', { style: 'display:none' });
+  probe.style.color = '';
+  probe.style.color = want;
+  if (!probe.style.color) return '';
+  if (typeof getComputedStyle !== 'function') return '';   // not a browser
+  document.body.append(probe);
+  const rgb = getComputedStyle(probe).color;
+  probe.remove();
+  const m = /^rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(rgb || '');
+  if (!m) return '';
+  return '#' + [1, 2, 3].map(i => Number(m[i]).toString(16).padStart(2, '0')).join('');
+}
+
+// Every colour already used on a cable, so the second blue cable is spelled the
+// same as the first instead of becoming a near miss nobody can filter on.
+function coloursUsed() {
+  const out = new Set();
+  for (const l of S.inv.links) {
+    const c = l.meta && l.meta.colour;
+    if (c) out.add(String(c).trim());
+  }
+  return [...out].sort();
+}
+
+// Free text plus a picker. Text, because "grey with a red boot" is a real answer
+// and a picker cannot say it; a picker, because when you do mean a colour,
+// typing hex from memory is silly.
 function colourCell(l) {
-  const inp = el('input', {
-    value: (l.meta && l.meta.colour) || '', placeholder: 'blue, #3366ff…', style: 'width:110px',
-  });
-  const dot = el('span', {
-    style: 'display:inline-block;width:11px;height:11px;border-radius:3px;'
-      + 'border:1px solid var(--line);vertical-align:middle;margin-right:5px',
-  });
-  const paint = () => {
-    const c = cssColour(inp.value);
-    dot.style.background = c || 'transparent';
-    dot.title = inp.value.trim()
-      ? (c ? 'drawn in this colour' : 'not a colour the browser knows, so the graph uses the port type')
-      : 'no colour recorded';
-  };
-  inp.onchange = () => {
-    const val = inp.value.trim();
+  const cur = (l.meta && l.meta.colour) || '';
+  const write = val => {
     const meta = { ...(l.meta || {}) };
     if (val) meta.colour = val; else delete meta.colour;
     l.meta = Object.keys(meta).length ? meta : null;
     touched();
   };
+
+  const listId = 'cablecolours';
+  let dl = document.getElementById(listId);
+  if (!dl) { dl = el('datalist', { id: listId }); document.body.append(dl); }
+  dl.replaceChildren(...coloursUsed().map(c => el('option', { value: c })));
+
+  const inp = el('input', {
+    value: cur, placeholder: 'blue, #3366ff…', style: 'width:120px', list: listId,
+  });
+  const pick = el('input', {
+    type: 'color', title: 'pick a colour', style: 'width:28px;padding:1px;height:24px',
+  });
+  const hex = toHex(cur);
+  if (hex) pick.value = hex;
+
+  const paint = () => {
+    const known = cssColour(inp.value);
+    inp.title = inp.value.trim()
+      ? (known ? 'the graph draws this cable in it'
+        : 'not a colour the browser knows, so the graph falls back to the port type')
+      : 'no colour recorded';
+    const h = toHex(inp.value);
+    if (h) pick.value = h;
+  };
+  // only on change: type=color always has a value, so reading it at render time
+  // would write #000000 into every cable that has no colour
+  pick.onchange = () => { inp.value = pick.value; paint(); write(pick.value); };
+  inp.onchange = () => { paint(); write(inp.value.trim()); };
   inp.oninput = paint;
   paint();
-  return el('span', { style: 'display:inline-flex;align-items:center' }, dot, inp);
+  return el('span', { style: 'display:inline-flex;align-items:center;gap:4px' }, pick, inp);
 }
 
 function renderCables(v, ix) {
@@ -3106,6 +3182,16 @@ const svgEl = (tag, attrs = {}, ...kids) => {
   for (const c of kids.flat()) if (c != null) n.append(c.nodeType ? c : document.createTextNode(c));
   return n;
 };
+// A label the box is too narrow to hold, plus a tooltip carrying the whole of
+// it. The <title> goes on a wrapping <g> rather than inside the <text>: a title
+// child of a text element lands in its textContent, which makes the label read
+// back wrong to anything measuring or testing it. First child, because that is
+// where SVG looks for it.
+const gtext = (attrs, full, max) => {
+  const t = svgEl('text', attrs, trunc(full, max));
+  if (full.length <= max) return t;
+  return svgEl('g', {}, svgEl('title', {}, full), t);
+};
 const WIRE = { eth: '#6ea8fe', power: '#f0c674', usb: '#b8a2e3', hdmi: '#5dd39e', dp: '#5dd39e', sata: '#e08a5f', pcie: '#e08a5f' };
 const GFONT = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 const BOX_W = 196, HEAD_H = 24, ROW_H = 15, PAD_Y = 26, COL_GAP = 118;
@@ -3122,7 +3208,8 @@ function renderGraph(v, ix) {
     'sockets of their own. Dashed thick lines carry PoE. ' +
     '<b>Click a cable</b> to trace its run: what feeds it, and what it goes on to feed, with the exact sockets ' +
     'marked and everything else faded. It follows direction, so it will not wander sideways into the other things ' +
-    'sharing the same wall socket. <b>Double click</b> a cable to edit it, which is where <code>carries</code> ' +
+    'sharing the same wall socket. <b>labels</b> shows what is written on each cable. ' +
+    '<b>Double click</b> a cable to edit it, which is where <code>carries</code> ' +
     'lives, and a node to open it. Click again, or use clear, to stop tracing.<br>' +
     '<b>Click a socket</b>, the small dot beside a port name, to start a cable, then click the socket at the other ' +
     'end. Only compatible, free sockets turn green, so anything you can click is a cable you could really plug in. ' +
@@ -3133,6 +3220,7 @@ function renderGraph(v, ix) {
 
   S.gfilter = S.gfilter || 'all';
   const bar = el('div', { style: 'display:flex;gap:6px;margin:8px 0;align-items:center;flex-wrap:wrap' });
+  if (S.glabels === undefined) S.glabels = true;
   for (const f of ['all', 'eth', 'power', 'usb', 'av', 'other']) {
     bar.append(el('button', {
       class: S.gfilter === f ? 'btn-primary' : '',
@@ -3245,7 +3333,8 @@ function renderGraph(v, ix) {
     const shown = n.pluggables.filter(p => live.has(n.id + ':' + p.id));
     // a virtual guest has no sockets, so it gets a header and nothing else
     const rows = n.virtual ? shown.length : Math.max(shown.length, 1);
-    const hdr = HEAD_H + (n.sublabel ? 11 : 0);   // room for the second line
+    const hdr = HEAD_H + (n.sublabel ? 11 : 0)
+      + (S.gtags && n.tags && n.tags.length ? 11 : 0);   // room for the extra lines
     const headH = hdr + rows * ROW_H + 8;
     let cy = y + headH;
     const kids = kidsOf.get(n.id) || [];
@@ -3447,6 +3536,21 @@ function renderGraph(v, ix) {
       opacity: dim ? '0.12' : '0.85',
       'pointer-events': 'none',
     }));
+    // What is written on the cable, at the middle of it. For this curve the
+    // midpoint is just the average of the two ends: the control points sit at
+    // the same heights as the ends and cancel out.
+    if (S.glabels && l.label && !dim) {
+      const mx = (from + to) / 2, my = (A.y + B.y) / 2;
+      line.append(svgEl('text', {
+        x: mx, y: my - 3, 'text-anchor': 'middle',
+        'font-size': '9', 'font-family': GFONT,
+        fill: on ? '#ffffff' : '#c3cad6',
+        // a halo in the background colour, so a label crossing another cable is
+        // still readable
+        stroke: BG, 'stroke-width': '3', 'paint-order': 'stroke',
+        'pointer-events': 'none',
+      }, trunc(l.label, 22)));
+    }
     g.append(line);
   }
 
@@ -3524,16 +3628,25 @@ function renderGraph(v, ix) {
     const freeCount0 = n.pluggables.filter(pp => Core.slotsLeft(ix, n.id, pp) > 0).length;
     const corner0 = n.virtual ? 'guest' : (freeCount0 > 0 ? freeCount0 + ' free' : '');
     const nameW = Math.max(6, Math.floor((w - 22) / 7) - (corner0 ? corner0.length + 1 : 0));
-    box.append(svgEl('text', {
+    // Before the rect and the rows, so a hover anywhere in the box that is not
+    // over a label of its own falls back to the whole identity of the node.
+    box.prepend(svgEl('title', {},
+      (n.label || n.id) + (n.sublabel ? '  ·  ' + n.sublabel : '') + '\n' + n.id
+      + (n.tags && n.tags.length ? '\ntags: ' + n.tags.join(' ') : '')));
+    box.append(gtext({
       x: x + 9, y: y + 16, fill: n.virtual ? '#9aa3b2' : '#e4e7ec',
       'font-size': depth ? '11' : '12', 'font-family': GFONT,
-    }, trunc(n.label || n.id, nameW)));
-    box.append(svgEl('title', {},
-      (n.label || n.id) + (n.sublabel ? '  ·  ' + n.sublabel : '') + '\n' + n.id));
+    }, n.label || n.id, nameW));
     if (n.sublabel) {
-      box.append(svgEl('text', {
+      box.append(gtext({
         x: x + 9, y: y + 27, fill: '#8b95a5', 'font-size': '10', 'font-family': GFONT,
-      }, trunc(n.sublabel, Math.floor((w - 18) / 6))));
+      }, n.sublabel, Math.floor((w - 18) / 6)));
+    }
+    if (S.gtags && n.tags && n.tags.length) {
+      box.append(gtext({
+        x: x + 9, y: y + (n.sublabel ? 38 : 27), fill: '#7f9ec9',
+        'font-size': '9', 'font-family': GFONT,
+      }, n.tags.join(' '), Math.floor((w - 18) / 5.4)));
     }
     // the right-hand corner shows what is still free, or that this is a guest
     const corner = corner0;
@@ -3548,12 +3661,12 @@ function renderGraph(v, ix) {
       // the exact sockets the traced chain passes through, so you can see where
       // it lands rather than only which boxes are involved
       const lit = litRefs.has(n.id + ':' + p.id);
-      box.append(svgEl('text', {
+      box.append(gtext({
         x: x + 12, y: py + 3, fill: lit ? '#ffffff' : '#9aa3b2',
         'font-size': '10', 'font-family': GFONT,
         'font-weight': lit ? '700' : null,
         opacity: dimmed ? '0.4' : '1',
-      }, trunc(p.id + (p.label && p.label !== p.id ? ' (' + p.label + ')' : ''), 28)));
+      }, p.id + (p.label && p.label !== p.id ? ' (' + p.label + ')' : ''), 28));
       const ref = n.id + ':' + p.id;
       const from = S.gconnect ? ix.portByRef.get(S.gconnect) : null;
       const isFrom = S.gconnect === ref;
@@ -3718,7 +3831,20 @@ function renderGraph(v, ix) {
     S.gz = { k, tx: 0, ty: 0 };
     apply();
   };
-  bar.append(el('button', { style: 'margin-left:6px', onclick: fit }, 'fit'));
+  bar.append(el('button', {
+    class: S.glabels ? 'btn-primary' : '',
+    style: 'margin-left:6px',
+    title: 'show what is written on each cable, where there is anything written',
+    onclick: () => { S.glabels = !S.glabels; render(); },
+  }, 'labels'));
+  // off by default: tags are how you filter, not something most runs need to
+  // read off every box at once, and a third line makes every box taller
+  bar.append(el('button', {
+    class: S.gtags ? 'btn-primary' : '',
+    title: 'show the tags on each node, under its name',
+    onclick: () => { S.gtags = !S.gtags; render(); },
+  }, 'tags'));
+  bar.append(el('button', { onclick: fit }, 'fit'));
   bar.append(el('button', { onclick: () => { S.gz = { k: 1, tx: 0, ty: 0 }; apply(); } }, '1:1'));
   bar.append(el('button', { onclick: () => exportSvg(root, width, height) }, 'SVG'));
   bar.append(el('button', { onclick: () => exportPng(root, width, height) }, 'PNG'));

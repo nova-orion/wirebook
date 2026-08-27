@@ -266,9 +266,13 @@ the **File System Access API**, not the download flow.
    re-asks where to write. That is a known rough edge, not a security boundary.*
 5. **Secure context only.** https or `localhost`. On plain http the API simply
    does not exist, which is why the deployment notes insist on TLS.
-6. **Chromium only.** Chrome, Edge, Brave, Opera. Firefox and Safari implement
-   only the private sandboxed filesystem, not access to your own files, so there
-   they fall back to download-and-move.
+6. **Chromium only.** Chrome, Edge, Opera. Firefox and Safari implement only the
+   private sandboxed filesystem, not access to your own files, so there they
+   fall back to download-and-move. **Brave** has the API but ships with it off,
+   so it behaves like Firefox until you turn on
+   `brave://flags/#file-system-access-api`; every prompt above still applies
+   after you do. The header says `(downloads only)` whenever the API is missing,
+   and hovering it says which of these is the reason.
 
 ### What that means for trusting a hosted copy
 
@@ -466,7 +470,9 @@ view called View. Beyond that:
   something its own ancestor is refused. Ctrl+click, middle click or the peek
   button opens a node in a dialog so you keep your place.
 - **Graph**: single click selects, double click opens, drag pans, ctrl+scroll
-  zooms toward the pointer.
+  zooms toward the pointer. `labels` and `tags` toggle what is written on the
+  cables and under each node's name. A box is only so wide, so anything too long
+  to fit is cut with an ellipsis and hovering it shows the whole thing.
 - **Back** works. Every view and node is a real URL, so the browser's back button
   walks back through where you have been, and any view can be bookmarked.
 - Every labelled control carries its own one-line explanation, rather than a

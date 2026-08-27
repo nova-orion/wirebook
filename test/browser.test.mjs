@@ -1038,6 +1038,161 @@ await test('the yaml view can be edited by hand', async () => {
   await page.ctx.close();
 });
 
+await test('cable labels show in the graph and can be turned off', async () => {
+  const page = await open();
+  await load(page, 'inventory.demo.yaml');
+  await nav(page, 'Graph');
+  const texts = () => page.evaluate(() =>
+    [...document.querySelectorAll('#view svg text')].map(t => t.textContent));
+
+  // what is written on a cable is the whole point of writing on it, and it was
+  // only ever in the tooltip
+  assert.ok((await texts()).includes('C13-A'), 'a cable label is not drawn');
+  await page.click('#view button:text-is("labels")');
+  await page.waitForTimeout(80);
+  assert.ok(!(await texts()).includes('C13-A'), 'the toggle does not hide them');
+  await page.click('#view button:text-is("labels")');
+  await page.waitForTimeout(80);
+  assert.ok((await texts()).includes('C13-A'), 'the toggle does not bring them back');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('the reason saving falls back to a download names the real cause', async () => {
+  // deleteFS reproduces exactly what Brave does: a secure origin where the API
+  // is simply absent. Telling that user to "use https" is wrong twice over,
+  // since they are already on https and it will not help.
+  const page = await open();
+  const secure = await page.evaluate(() => window.isSecureContext);
+  assert.ok(secure, 'the harness is not on a secure origin, so this proves nothing');
+
+  const generic = await page.evaluate(() => whyNoFileWrite());
+  assert.ok(!/secure origin/.test(generic), 'blames the origin on a secure origin: ' + generic);
+  assert.ok(/File System Access API/.test(generic), 'does not say what is missing: ' + generic);
+
+  const brave = await page.evaluate(() => {
+    Object.defineProperty(navigator, 'brave', { value: {}, configurable: true });
+    return whyNoFileWrite();
+  });
+  assert.ok(/brave:\/\/flags/.test(brave), 'does not tell a Brave user the fix: ' + brave);
+  assert.ok(!/secure origin/.test(brave), 'still blames the origin: ' + brave);
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('node tags can be shown in the graph and are off by default', async () => {
+  const page = await open();
+  await load(page, 'inventory.demo.yaml');
+  await nav(page, 'Graph');
+  // the tag line is the only text drawn in this colour
+  const tagLines = () => page.evaluate(() =>
+    [...document.querySelectorAll('#view svg text')]
+      .filter(t => t.getAttribute('fill') === '#7f9ec9').map(t => t.textContent));
+
+  assert.equal((await tagLines()).length, 0, 'tags are drawn before the toggle is used');
+  await page.click('#view button:text-is("tags")');
+  await page.waitForTimeout(80);
+  const on = await tagLines();
+  assert.ok(on.length > 0, 'the toggle does not draw any tags');
+  assert.ok(on.some(t => t.includes('critical')), 'a known tag is missing: ' + JSON.stringify(on));
+  // a third line in the header must push the port rows down, not land on them
+  const collide = await page.evaluate(() => {
+    const ts = [...document.querySelectorAll('#view svg text')];
+    return ts.filter(t => t.getAttribute('fill') === '#7f9ec9').some(t => ts.some(o =>
+      o !== t && Math.abs(+o.getAttribute('y') - +t.getAttribute('y')) < 4
+      && Math.abs(+o.getAttribute('x') - +t.getAttribute('x')) < 40));
+  });
+  assert.ok(!collide, 'a tag line overlaps another label');
+  await page.click('#view button:text-is("tags")');
+  await page.waitForTimeout(80);
+  assert.equal((await tagLines()).length, 0, 'the toggle does not hide them again');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('a label the graph had to cut carries the whole of it in a tooltip', async () => {
+  const page = await open();
+  await page.evaluate(y => ingest(y, 'long.yaml'), `nodes:
+  - id: net/switch-with-a-very-long-identifier
+    label: Netgear GS308EPP managed switch, ground floor
+    sublabel: eight port, four of them power over ethernet
+    type: switch
+    tags: [a-fairly-long-tag, another-long-tag, third-long-tag]
+    pluggables:
+      - id: uplink-port-number-one
+        label: uplink to the upstairs cupboard switch
+        type: eth
+        connected_with: net/other:p1
+  - id: net/other
+    label: Other
+    type: switch
+    pluggables:
+      - {id: p1, type: eth}
+`);
+  await nav(page, 'Graph');
+  await page.click('#view button:text-is("tags")');
+  await page.waitForTimeout(80);
+  const cut = await page.evaluate(() =>
+    [...document.querySelectorAll('#view svg text')]
+      .filter(t => t.textContent.includes('…'))
+      .map(t => ({
+        shown: t.textContent,
+        // the title has to be a sibling under a wrapping <g>: inside the <text>
+        // it would show up in textContent and corrupt the label itself
+        tip: t.parentNode.tagName === 'g'
+          ? (t.parentNode.querySelector(':scope > title') || {}).textContent || null : null,
+      })));
+  assert.ok(cut.length >= 4, 'expected the long name, sublabel, tags and port to be cut, got '
+    + JSON.stringify(cut));
+  for (const c of cut) {
+    assert.ok(c.tip, 'no tooltip on the cut label ' + JSON.stringify(c.shown));
+    assert.ok(c.tip.startsWith(c.shown.slice(0, -1)),
+      'the tooltip does not carry the label it belongs to: ' + JSON.stringify(c));
+  }
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('the filter applies without leaving the view', async () => {
+  const page = await open();
+  await load(page, 'inventory.demo.yaml');
+  await nav(page, 'Graph');
+  const boxes = () => page.locator('#view svg g[data-node]').count();
+  const before = await boxes();
+
+  // typing in the filter used to repaint only the sidebar, so the graph kept
+  // showing the old set until you switched away and back
+  await page.fill('#nav input', 'switch');
+  await page.waitForTimeout(200);
+  assert.ok(await boxes() < before, `the graph did not narrow: ${await boxes()} of ${before}`);
+  assert.equal(await page.evaluate(() => document.activeElement === document.querySelector('#nav input')),
+    true, 'the caret left the filter box, so you cannot keep typing');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('the colour picker offers colours already used', async () => {
+  const page = await open();
+  await load(page, 'inventory.demo.yaml');
+  await nav(page, 'Cables');
+  assert.ok(await page.locator('#view input[type=color]').count() > 0, 'no colour picker');
+
+  const opts = await page.evaluate(() => {
+    const dl = document.getElementById('cablecolours');
+    return dl ? [...dl.querySelectorAll('option')].map(o => o.value) : null;
+  });
+  assert.ok(opts && opts.length > 0, 'no suggestions from colours already in the file');
+
+  // the picker must not write into cables that have no colour: type=color always
+  // has a value, so reading it at render time would stamp #000000 everywhere
+  const painted = await page.evaluate(() => S.inv.links.filter(l => l.meta && l.meta.colour).length);
+  await page.waitForTimeout(60);
+  assert.equal(await page.evaluate(() => S.inv.links.filter(l => l.meta && l.meta.colour).length),
+    painted, 'rendering the picker coloured cables that had no colour');
+  noErrs(page);
+  await page.ctx.close();
+});
+
 /* ------------------------------------------------------ tree editing ------- */
 
 const treeRow = (page, id) => page.locator(`#view [data-node-id="${id}"]`);

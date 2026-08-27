@@ -86,6 +86,7 @@ function makeDom(settingsYaml) {
     clearTimeout() {},
     queueMicrotask: f => f(),
     fetch: () => Promise.reject(new Error('offline in this harness')),
+    getComputedStyle: () => ({ color: '', backgroundColor: '', borderTopWidth: '0px' }),
     URLSearchParams,
     indexedDB: undefined,
     __store: store,

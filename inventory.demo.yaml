@@ -17,9 +17,14 @@ vlans:
     name: mgmt
     subnets:
       - 10.0.30.0/24
+    tags:
+      - infra
 nodes:
   - id: compute/guest-dns
     label: dns
+    tags:
+      - critical
+      - dns
     type: vm
     virtual: true
     hostname: dns.lan
@@ -28,6 +33,9 @@ nodes:
   - id: compute/pi
     label: Raspberry Pi
     sublabel: spare
+    tags:
+      - sbc
+      - spare
     type: server
     parent: loc/desk
     pluggables:
@@ -41,6 +49,9 @@ nodes:
   - id: compute/server
     label: Mini PC
     sublabel: hypervisor
+    tags:
+      - critical
+      - hypervisor
     type: server
     hostname: srv1.lan
     parent: loc/cupboard
@@ -72,6 +83,8 @@ nodes:
   - id: compute/server-nvme
     label: 1TB NVMe
     sublabel: in the Mini PC
+    tags:
+      - storage
     type: disk
     parent: compute/server
     meta:
@@ -96,6 +109,9 @@ nodes:
   - id: misc/dp-hdmi
     label: DP to HDMI
     sublabel: adapter cable
+    tags:
+      - desk
+      - video
     type: adapter
     parent: loc/desk
     pluggables:
@@ -109,6 +125,9 @@ nodes:
   - id: misc/monitor
     label: Monitor
     sublabel: desk
+    tags:
+      - desk
+      - video
     type: display
     parent: loc/desk
     pluggables:
@@ -125,6 +144,10 @@ nodes:
   - id: net/ap
     label: Ceiling AP
     sublabel: PoE, no brick
+    tags:
+      - network
+      - poe
+      - wifi
     type: ap
     parent: loc/flat
     note: powered over the ethernet run, so it has no brick of its own
@@ -135,6 +158,10 @@ nodes:
   - id: net/switch
     label: Switch
     sublabel: 8 port, managed
+    tags:
+      - critical
+      - network
+      - poe
     type: switch
     parent: loc/cupboard
     meta:
@@ -166,6 +193,9 @@ nodes:
   - id: power/psu-switch
     label: Switch PSU
     sublabel: 12V barrel
+    tags:
+      - power
+      - psu
     type: adapter
     parent: loc/cupboard
     meta:
@@ -185,6 +215,8 @@ nodes:
   - id: power/strip
     label: Power strip
     sublabel: 4 socket
+    tags:
+      - power
     type: strip
     parent: loc/cupboard
     pluggables:
@@ -206,6 +238,9 @@ nodes:
   - id: power/ups
     label: UPS
     sublabel: 650W
+    tags:
+      - critical
+      - power
     type: ups
     parent: loc/cupboard
     note: outlet 2 is unusable, see the note on the cable in outlet 1
@@ -242,6 +277,9 @@ nodes:
   - id: power/usb-charger
     label: USB charger
     sublabel: 3 port
+    tags:
+      - power
+      - psu
     type: adapter
     parent: loc/desk
     pluggables:
@@ -262,6 +300,9 @@ nodes:
   - id: power/wall-desk
     label: Wall socket
     sublabel: desk
+    tags:
+      - mains
+      - power
     type: outlet
     parent: loc/desk
     meta:
@@ -287,12 +328,16 @@ links:
       carries: power
   - a: net/ap:eth0
     b: net/switch:p3
+    label: AP run
     poe: true
+    tags:
+      - ceiling-run
     meta:
       poe_standard: 802.3af
       poe_watts: 9
   - a: power/strip:inlet
     b: power/ups:out1
+    label: C13-A
     note: the strip's moulded plug overhangs the next outlet
     blocks:
       - power/ups:out2
