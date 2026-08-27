@@ -265,6 +265,34 @@ test('embedded settings matches settings.yaml on disk', () => {
     'index.html embeds a stale copy of settings.yaml');
 });
 
+test('no location block in nginx.conf declares add_header', () => {
+  // nginx inherits add_header from the enclosing level only when the current
+  // level declares none of its own. One add_header in a location therefore
+  // drops every server-level header for that location, silently, with no
+  // warning on reload. A `location = /index.html` that set a cache header this
+  // way served the page itself with no Content-Security-Policy.
+  const conf = fs.readFileSync(rel('../deploy/nginx.conf'), 'utf8');
+  const offenders = [];
+  let loc = null, depth = 0;
+  for (const raw of conf.split('\n')) {
+    const line = raw.replace(/#.*/, '').trim();
+    if (/^location\b/.test(line)) { loc = line; depth = 0; }
+    if (loc) {
+      depth += (line.match(/{/g) || []).length - (line.match(/}/g) || []).length;
+      if (/\badd_header\b/.test(line)) offenders.push(`${loc} -> ${line}`);
+      if (depth <= 0 && /}/.test(line)) loc = null;
+    }
+  }
+  assert.deepEqual(offenders, [], 'add_header inside a location drops the server-level headers');
+
+  // and the headers that have to survive are in fact set
+  for (const h of ['Cache-Control', 'Content-Security-Policy', 'X-Content-Type-Options']) {
+    assert.ok(new RegExp('add_header ' + h + '\\b').test(conf), 'nginx.conf sets no ' + h);
+  }
+  // the assets carry no version in their names, so nothing else can bust them
+  assert.ok(/add_header Cache-Control "no-cache"/.test(conf), 'assets are not revalidated');
+});
+
 test('field specs and the schema meta vocabulary agree', () => {
   const specIds = new Set(Core.parseSettings(settingsText).fields.map(f => f.id));
   const schemaText = fs.readFileSync(rel('../schema/inventory.yaml'), 'utf8');
