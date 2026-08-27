@@ -3229,11 +3229,66 @@ const BOX_W = 196, HEAD_H = 24, ROW_H = 15, PAD_Y = 26, COL_GAP = 118;
 const KID_INSET = 10, KID_GAP = 6;
 const BG = '#1b1e24';
 
+// WCAG relative luminance, and the ratio between two colours. Measured, not
+// judged by eye: judging by eye is how a black cable shipped drawn at 1.26:1
+// against this background and nobody noticed until someone asked whether black
+// would even show up.
+function relLum(hex) {
+  const m = /^#([0-9a-f]{6})$/i.exec(String(hex || ''));
+  if (!m) return null;
+  const chan = i => {
+    const s = parseInt(m[1].slice(i * 2, i * 2 + 2), 16) / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * chan(0) + 0.7152 * chan(1) + 0.0722 * chan(2);
+}
+function contrastRatio(a, b) {
+  const la = relLum(a), lb = relLum(b);
+  if (la === null || lb === null) return null;
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+// WCAG 2.1 SC 1.4.11 asks 3:1 of a graphical object that carries meaning, and a
+// cable's colour is exactly that: it is how you find the thing behind the desk.
+const WIRE_MIN_CONTRAST = 3;
+// The casing has to clear that same 3:1 against a near-black background, which
+// no dark shade can, so it is light. One constant is enough because on this
+// background only dark colours ever fail the test, so a light casing is always
+// distinct from the cable sitting on it. It reuses the label grey rather than
+// introducing an eighth colour to the diagram.
+const CASING = '#c3cad6';
+
+// toHex has to attach a probe to the document and force a style read, so cache
+// per colour string: the graph asks once per cable and a file has many cables
+// spelled the same way.
+const hexCache = new Map();
+function hexOf(v) {
+  const key = String(v || '');
+  if (!hexCache.has(key)) hexCache.set(key, toHex(key));
+  return hexCache.get(key);
+}
+
+// Most patch cables really are black, and black on this background is recorded,
+// drawn, and invisible. Recolouring it would lie about the one fact you are
+// trying to use, so the cable keeps its colour and gets a thin casing under it
+// instead: the same trick the cable labels use with their BG halo and the traced
+// chain uses with its wider path. Returns '' when the colour is legible on its
+// own, so a diagram of visible cables gains no extra lines, and '' again when
+// the browser cannot resolve the value at all, since there is then nothing to
+// measure and the wire has already fallen back to its type colour.
+function cableCasing(colour) {
+  const hex = hexOf(colour);
+  if (!hex) return '';
+  const r = contrastRatio(hex, BG);
+  return r !== null && r < WIRE_MIN_CONTRAST ? CASING : '';
+}
+
 function renderGraph(v, ix) {
   v.append(el('h2', {}, 'Graph'));
   v.append(rawHint(
     'Columns are steps along a cable run, so a wall socket is on the left and whatever it eventually feeds is on the ' +
-    'right. Switch to <b>by place</b> if you would rather group by room. A box drawn <b>inside another box</b> is ' +
+    'right. Where a cable declares no direction, which is normal for ethernet, columns count hops from one end of ' +
+    'the run instead. Switch to <b>by place</b> if you would rather group by room. A box drawn <b>inside another box</b> is ' +
     'physically inside it: a drive in its server, a guest on its host. Guests are dashed, because they have no ' +
     'sockets of their own. Dashed thick lines carry PoE. ' +
     '<b>Click a cable</b> to trace its run: what feeds it, and what it goes on to feed, with the exact sockets ' +
@@ -3265,8 +3320,11 @@ function renderGraph(v, ix) {
     bar.append(el('span', { class: 'chip', style: 'color:' + WIRE[k] + ';border-color:' + WIRE[k] + '55' }, k));
   }
   if (S.inv.links.some(l => cableColour(l))) {
-    bar.append(el('span', { class: 'faint', title: 'a cable with a colour recorded is drawn in it' },
-      '· real colours where recorded'));
+    bar.append(el('span', {
+      class: 'faint',
+      title: 'a cable with a colour recorded is drawn in it, and one too dark to see against this '
+        + 'background keeps its colour and gains a pale casing underneath',
+    }, '· real colours where recorded'));
   }
 
   // which location does a node live in
@@ -3334,6 +3392,31 @@ function renderGraph(v, ix) {
     ix.portByRef.has(l.a) && ix.portByRef.has(l.b) && wanted(l) && endsInScope(l));
   const live = new Set(links.flatMap(l => [l.a, l.b]));
 
+  // The type buttons used to cut the cables and nothing else, so every node was
+  // still drawn. A node the filter left with no cable has nothing to chain to,
+  // so it was ranked a source, and the whole inventory stacked into one tall
+  // column: 13 boxes and 1074px for `usb` on the demo, which matches no cable at
+  // all. The type filter has to narrow the node set the same way the text filter
+  // does, so the two go through one predicate below.
+  const onACable = new Set([...live].map(ref => Core.splitRef(ref)[0]));
+  const kept = new Set(onACable);
+  // A nested box is drawn inside its parent's, so a child that survives the
+  // filter needs its containment ancestry kept too, or it has nowhere to sit and
+  // falls out into the orphan row at the bottom.
+  for (const id of onACable) {
+    let cur = ix.nodeById.get(id), guard = 0;
+    while (cur && guard++ < 10000) {
+      const p = ix.nodeById.get(cur.parent);
+      if (!p || p.type === 'location') break;    // locations are boundaries, not boxes
+      kept.add(p.id);
+      cur = p;
+    }
+  }
+  const typeShows = n => S.gfilter === 'all' || kept.has(n.id);
+  // Both filters apply, and they compose: type narrows to what the visible
+  // cables touch, text narrows by name, type or tag.
+  const inScope = n => nodeMatches(n) && typeShows(n);
+
   // Containment, drawn as containment. This used to be one flat stack per
   // location, so a drive inside a server or a VM on a host appeared as a sibling
   // box and the parent relation was invisible. Children are now nested inside
@@ -3345,6 +3428,7 @@ function renderGraph(v, ix) {
   };
   for (const n of S.inv.nodes) {
     if (n.type === 'location') continue;
+    if (!typeShows(n)) continue;   // else an in-scope parent drags its whole tree back in
     const p = isNodeParent(n);
     if (!p) continue;
     if (!kidsOf.has(p.id)) kidsOf.set(p.id, []);
@@ -3401,14 +3485,19 @@ function renderGraph(v, ix) {
   let colTitles;
   if (S.glayout === 'place') {
     columns = colIds.map(cid => S.inv.nodes.filter(n =>
-      n.type !== 'location' && locOf(n) === cid && !isNodeParent(n) && nodeMatches(n)));
+      n.type !== 'location' && locOf(n) === cid && !isNodeParent(n) && inScope(n)));
     colTitles = colIds.map(cid => {
       const loc = ix.nodeById.get(cid);
       return (loc ? (loc.label || loc.id) : 'no location').toUpperCase();
     });
+    // A room whose devices are all filtered out drew an empty titled column and
+    // a gap the width of a box. The chain layout below already drops those.
+    const filled = columns.map((c, i) => [c, colTitles[i]]).filter(([c]) => c.length);
+    columns = filled.map(([c]) => c);
+    colTitles = filled.map(([, t]) => t);
   } else {
     const roots = S.inv.nodes.filter(n =>
-      n.type !== 'location' && !isNodeParent(n) && nodeMatches(n));
+      n.type !== 'location' && !isNodeParent(n) && inScope(n));
     const idx = new Map(roots.map((n, i) => [n.id, i]));
     // Only a cable with a declared direction can order two things. An ethernet
     // run between two switches says nothing about which comes first, so it is
@@ -3422,16 +3511,6 @@ function renderGraph(v, ix) {
       if (pa.port.dir === 'out' && pb.port.dir === 'in') edges.push([ra.id, rb.id]);
       else if (pb.port.dir === 'out' && pa.port.dir === 'in') edges.push([rb.id, ra.id]);
     }
-    // longest path from a source, relaxed until it settles
-    const rank = new Map(roots.map(n => [n.id, 0]));
-    for (let pass = 0; pass < roots.length + 2; pass++) {
-      let moved = false;
-      for (const [from, to] of edges) {
-        if (rank.get(to) < rank.get(from) + 1) { rank.set(to, rank.get(from) + 1); moved = true; }
-      }
-      if (!moved) break;            // a cycle would otherwise run to the cap
-    }
-    // things with no directed cable at all sit beside whatever they touch
     const undirected = new Map();
     for (const l of links) {
       const pa = ix.portByRef.get(l.a), pb = ix.portByRef.get(l.b);
@@ -3443,13 +3522,89 @@ function renderGraph(v, ix) {
       undirected.get(ra).push(rb);
       undirected.get(rb).push(ra);
     }
+    // longest path from a source, relaxed until it settles
+    const rank = new Map(roots.map(n => [n.id, 0]));
+    for (let pass = 0; pass < roots.length + 2; pass++) {
+      let moved = false;
+      for (const [from, to] of edges) {
+        if (rank.get(to) < rank.get(from) + 1) { rank.set(to, rank.get(from) + 1); moved = true; }
+      }
+      if (!moved) break;            // a cycle would otherwise run to the cap
+    }
+    // things with no directed cable at all sit beside whatever they touch
     const touched = new Set(edges.flat());
+    const ranked = new Set(touched);
     for (const n of roots) {
       if (touched.has(n.id)) continue;
       const near = (undirected.get(n.id) || []).filter(x => touched.has(x));
       if (near.length) {
         rank.set(n.id, Math.round(near.reduce((s, x) => s + rank.get(x), 0) / near.length));
+        ranked.add(n.id);
       }
+    }
+
+    // Direction is what spreads the columns, and ethernet has none to give. It is
+    // not missing data: the user runs two routers, so on failover the traffic
+    // through a given run genuinely reverses, and neither end is "first". So
+    // filtering to `eth` left every rank at 0 and drew the entire set as one tall
+    // column, which reads as a list and not as a diagram.
+    //
+    // Where direction cannot say where a node belongs, hop distance still can:
+    // things far apart in the cabling stay far apart on screen, which is most of
+    // what the chain layout is for. This runs only over nodes no directed cable
+    // reached, so a run that does declare direction keeps the layout it already
+    // had, and a mix of the two extends the directed chain rather than starting a
+    // second one beside it. Seeds go in rank order so the nearest seed wins.
+    const degree = id => (undirected.get(id) || []).length;
+    const seen = new Set(ranked);
+    const queue = [...ranked].sort((a, b) => rank.get(a) - rank.get(b) || (a < b ? -1 : 1));
+    let qi = 0;
+    const walk = () => {
+      while (qi < queue.length) {
+        const id = queue[qi++];
+        for (const nb of undirected.get(id) || []) {
+          if (seen.has(nb)) continue;
+          seen.add(nb);
+          rank.set(nb, rank.get(id) + 1);
+          queue.push(nb);
+        }
+      }
+    };
+    walk();
+
+    // What is left over is a component with no directed cable anywhere in it, so
+    // nothing seeded it and it needs a left edge chosen for it. Starting at the
+    // busiest node is the obvious guess and is wrong for a plain run: from the
+    // middle of a-b-c both ends land one hop out, in the same column, so a run
+    // draws as a fork. Sweep once from the busiest node, take whatever is
+    // furthest from it, and start there instead. That is the usual way to find an
+    // end of a graph, and an end is what a chain wants on its left. Ties break on
+    // id so the picture does not reshuffle between renders. Degree 0 is a node
+    // with no visible cable at all, and there is nowhere better for it than
+    // column 0.
+    const endFrom = start => {
+      const dist = new Map([[start, 0]]);
+      const q = [start];
+      let best = start;
+      for (let i = 0; i < q.length; i++) {
+        const id = q[i], d = dist.get(id);
+        if (d > dist.get(best) || (d === dist.get(best) && id < best)) best = id;
+        for (const nb of undirected.get(id) || []) {
+          if (seen.has(nb) || dist.has(nb)) continue;
+          dist.set(nb, d + 1);
+          q.push(nb);
+        }
+      }
+      return best;
+    };
+    const spare = [...roots].filter(n => degree(n.id) > 0)
+      .sort((a, b) => degree(b.id) - degree(a.id) || (a.id < b.id ? -1 : 1));
+    for (const n of spare) {
+      if (seen.has(n.id)) continue;
+      const head = endFrom(n.id);
+      seen.add(head);               // rank stays 0: a component starts at its own left edge
+      queue.push(head);
+      walk();
     }
     const maxRank = Math.max(0, ...[...rank.values()]);
     columns = Array.from({ length: maxRank + 1 }, () => []);
@@ -3487,7 +3642,7 @@ function renderGraph(v, ix) {
   // A parent loop leaves every node in it without a root, so nothing would be
   // laid out and they would silently disappear. Same failure the tree had.
   const orphans = S.inv.nodes.filter(n =>
-    n.type !== 'location' && !place.has(n.id) && nodeMatches(n));
+    n.type !== 'location' && !place.has(n.id) && inScope(n));
   if (orphans.length) {
     let y = maxY + PAD_Y;
     for (const n of orphans) y += layout(n, 12, y, BOX_W, 0) + PAD_Y;
@@ -3496,7 +3651,22 @@ function renderGraph(v, ix) {
 
   if (!place.size) {
     v.append(bar);
-    v.append(el('div', { class: 'empty' }, 'Nothing to draw yet. Add some nodes and cables.'));
+    // Say which filter emptied it and offer the way back. A filter that matches
+    // nothing is otherwise indistinguishable from an inventory with nothing in
+    // it, which is how you conclude your cables have gone missing.
+    const box = el('div', { class: 'empty' });
+    if (S.gfilter !== 'all' || filtering()) {
+      box.append('Nothing matches this filter'
+        + (S.gfilter === 'all' ? '' : ': no ' + S.gfilter + ' cables')
+        + (filtering() ? ' matching "' + S.navQ + '"' : '') + '. ');
+      if (S.gfilter !== 'all') {
+        box.append(el('button', { onclick: () => { S.gfilter = 'all'; render(); } }, 'show all types'), ' ');
+      }
+      if (filtering()) box.append(el('button', { onclick: () => { S.navQ = ''; render(); } }, 'clear filter'));
+    } else {
+      box.append('Nothing to draw yet. Add some nodes and cables.');
+    }
+    v.append(box);
     return;
   }
 
@@ -3528,7 +3698,8 @@ function renderGraph(v, ix) {
     const dim = traced.size > 0 && !on;
     // the actual colour of the actual cable, when you have bothered to record
     // it: that is the thing you are looking for behind the desk
-    const wire = cableColour(l) || WIRE[t] || '#7f8794';
+    const recorded = cableColour(l);
+    const wire = recorded || WIRE[t] || '#7f8794';
     const line = svgEl('g', { style: 'cursor:pointer' });
     // a fat transparent line under the thin one, so a 1.4px cable is clickable
     line.append(svgEl('path', {
@@ -3560,9 +3731,24 @@ function renderGraph(v, ix) {
         opacity: '0.22', 'pointer-events': 'none',
       }));
     }
+    const w = on ? (l.poe ? 3.4 : 2.6) : (l.poe ? 2.4 : 1.4);
+    // Only when the recorded colour is the one being drawn: a traced cable is
+    // already white, and a type colour was picked to be legible in the first
+    // place. The casing follows the wire's own opacity so dimming the rest of
+    // the diagram still dims it.
+    const casing = on ? '' : cableCasing(recorded);
+    if (casing) {
+      line.append(svgEl('path', {
+        d, fill: 'none', stroke: casing, 'stroke-width': String(w + 2),
+        // the same dashes, or a PoE run reads as a solid light cable with dark
+        // dashes painted on it
+        'stroke-dasharray': l.poe ? '5 3' : null,
+        class: 'casing', opacity: dim ? '0.12' : '0.85', 'pointer-events': 'none',
+      }));
+    }
     line.append(svgEl('path', {
       d, fill: 'none', stroke: on ? '#ffffff' : wire,
-      'stroke-width': String(on ? (l.poe ? 3.4 : 2.6) : (l.poe ? 2.4 : 1.4)),
+      'stroke-width': String(w),
       'stroke-dasharray': l.poe ? '5 3' : null,
       opacity: dim ? '0.12' : '0.85',
       'pointer-events': 'none',

@@ -267,7 +267,10 @@ It walks every view and node, clicks every button, types ~45 hostile values into
 every input, loads two dozen malformed files, applies every template, and after
 each action asserts: no uncaught error, `currentYaml()` still works, the document
 round trips byte for byte, no cable disappeared, the pane is not empty. Then it
-checks a 420px viewport and the contrast of every distinct text colour.
+checks a 420px viewport, the contrast of every distinct text colour, and the
+contrast of every cable stroke in the graph (3:1, the WCAG bar for a graphical
+object rather than for text; a cable may fail on its own stroke as long as the
+casing under it passes, because a black cable has to stay black).
 
 It is not in CI, because it is slow and its job is to surface the unknown rather
 than guard the known. **Findings get promoted into `browser.test.mjs` as named

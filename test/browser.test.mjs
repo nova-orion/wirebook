@@ -1792,6 +1792,309 @@ await test('a parent loop does not hang or hide nodes in the graph', async () =>
   await page.ctx.close();
 });
 
+// The type buttons above the graph (eth, power, usb, av, other) filtered the
+// CABLES and nothing else, so every node was still drawn. A node the filter left
+// with no cable has nothing to chain to, so it ranked as a source and the whole
+// inventory stacked into one column: `usb` matches no cable on the demo and
+// still drew all 13 boxes down 1074px. The user reported "a huge vertical list".
+await test('the graph type filter narrows the node set, not only the cables', async () => {
+  const page = await open();
+  await load(page, 'inventory.demo.yaml');
+  await nav(page, 'Graph');
+
+  // Read what a user can see: the boxes, and the cables by the tooltip each one
+  // carries. Nothing here reaches into the layout's own bookkeeping.
+  const shot = (filter, q = '') => page.evaluate(([filter, q]) => {
+    S.gfilter = filter; S.navQ = q; render();
+    const svg = document.querySelector('#view svg');
+    const empty = (document.querySelector('#view .empty') || {}).textContent || '';
+    if (!svg) return { ids: [], cables: [], empty };
+    return {
+      ids: [...svg.querySelectorAll('g[data-node]')].map(g => g.getAttribute('data-node')),
+      cables: [...svg.querySelectorAll('title')]
+        .map(t => t.textContent).filter(t => t.includes(' <-> ')),
+      empty,
+    };
+  }, [filter, q]);
+
+  const parent = await page.evaluate(() =>
+    Object.fromEntries(S.inv.nodes.map(n => [n.id, n.parent || ''])));
+  // The real invariant: every box drawn has a visible cable on it, or contains
+  // something that has. A box with nothing plugged into it is the noise.
+  const unjustified = s => {
+    const touched = new Set();
+    for (const c of s.cables) {
+      const pair = c.split('   ')[0].split(' | ')[0].replace(' (PoE)', '');
+      for (const ref of pair.split(' <-> ')) {
+        for (let id = ref.split(':')[0]; id; id = parent[id] || '') touched.add(id);
+      }
+    }
+    return s.ids.filter(id => !touched.has(id));
+  };
+
+  const all = await shot('all');
+  assert.ok(all.ids.length > 6, 'the demo did not draw, got ' + all.ids.length + ' boxes');
+
+  for (const f of ['eth', 'power', 'usb', 'av', 'other']) {
+    const s = await shot(f);
+    assert.ok(s.ids.length < all.ids.length,
+      `${f} drew ${s.ids.length} of ${all.ids.length} boxes: the type filter is not narrowing the node set`);
+    assert.deepEqual(unjustified(s), [],
+      `${f} drew boxes with no ${f} cable touching them`);
+  }
+
+  // usb matches no cable in the demo at all, and drawing the entire inventory is
+  // the worst possible answer to that. An empty diagram has to say why.
+  const usb = await shot('usb');
+  assert.equal(usb.ids.length, 0, 'a filter matching no cable still drew ' + usb.ids.length + ' boxes');
+  assert.match(usb.empty, /usb/, 'an emptied diagram does not say which filter emptied it');
+
+  // and the two filters compose: "desk" alone keeps three things, power alone
+  // keeps ten, together they keep the two that are both
+  const txt = await shot('all', 'desk');
+  assert.ok(txt.ids.length < all.ids.length,
+    `the text filter stopped narrowing the graph: ${txt.ids.length} of ${all.ids.length}`);
+  const pwr = await shot('power', '');
+  const both = await shot('power', 'desk');
+  assert.ok(both.ids.length > 0, 'text and type together dropped everything');
+  assert.ok(both.ids.length < txt.ids.length && both.ids.length < pwr.ids.length,
+    `text+type must narrow further than either alone: ${both.ids.length}, text ${txt.ids.length}, type ${pwr.ids.length}`);
+  assert.ok(both.ids.every(id => txt.ids.includes(id)),
+    'the combined set is not a subset of the text-filtered set: ' + JSON.stringify(both.ids));
+  assert.deepEqual(unjustified(both), [], 'text+type drew a box with no cable on it');
+
+  noErrs(page);
+  await page.ctx.close();
+});
+
+// Columns in the chain layout came only from cables with a declared direction,
+// and an ethernet run has none to declare: the user runs two routers, so on
+// failover the traffic through a given cable genuinely reverses and neither end
+// is "first". So filtering the graph to `eth` produced no directed edges at all,
+// every node kept rank 0, and the whole set drew as one tall column. A spine of
+// five switches with fifteen clients came out 1 column and 1750px, which is a
+// list, not a diagram. The DATA is right; the layout has to cope.
+//
+// Read the boxes the way a user sees them: distinct x values are columns, and a
+// diagram whose height is most of the sum of its box heights is a single stack.
+const boxesIn = (page, yaml, filter = 'all') => page.evaluate(([yaml, filter]) => {
+  ingest(yaml, 'x.yaml');
+  S.sel = { kind: 'view', id: 'graph' };
+  S.glayout = 'chain';
+  S.gfilter = filter;
+  render();
+  const svg = document.querySelector('#view svg');
+  if (!svg) return [];
+  return [...svg.querySelectorAll('g[data-node]')].map(g => {
+    const r = g.querySelector('rect');
+    return {
+      id: g.getAttribute('data-node'),
+      x: +r.getAttribute('x'), y: +r.getAttribute('y'), h: +r.getAttribute('height'),
+    };
+  });
+}, [yaml, filter]);
+
+// Five switches in a row, three clients on each. All ethernet, no `dir`.
+const spineYaml = (() => {
+  const out = ['nodes:', '  - {id: loc/room, type: location}'];
+  for (let s = 0; s < 5; s++) {
+    out.push(`  - id: net/sw${s}`, '    type: switch', '    parent: loc/room', '    pluggables:');
+    if (s > 0) out.push('      - {id: up, type: eth}');
+    if (s < 4) out.push(`      - {id: dn, type: eth, connected_with: 'net/sw${s + 1}:up'}`);
+    for (let c = 0; c < 3; c++) {
+      out.push(`      - {id: c${c}, type: eth, connected_with: 'host/h${s}-${c}:eth0'}`);
+    }
+  }
+  for (let s = 0; s < 5; s++) {
+    for (let c = 0; c < 3; c++) {
+      out.push(`  - id: host/h${s}-${c}`, '    type: server', '    parent: loc/room',
+        '    pluggables:', '      - {id: eth0, type: eth}');
+    }
+  }
+  return out.join('\n') + '\n';
+})();
+
+await test('an all-ethernet graph lays out as a chain, not one tall column', async () => {
+  const page = await open();
+  const boxes = await boxesIn(page, spineYaml);
+  assert.equal(boxes.length, 20, 'the spine fixture did not draw, got ' + boxes.length + ' boxes');
+
+  const cols = new Set(boxes.map(b => b.x));
+  assert.ok(cols.size >= 4,
+    `an all-ethernet spine drew in ${cols.size} column(s): with no cable declaring a `
+    + 'direction the chain layout fell back to stacking everything in column 0');
+
+  const stacked = boxes.reduce((t, b) => t + b.h, 0);
+  const tall = Math.max(...boxes.map(b => b.y + b.h));
+  assert.ok(tall < stacked * 0.5,
+    `the diagram is ${tall}px tall against ${stacked}px of boxes: that is one stack, not a chain`);
+
+  // Hop distance is the point, so the far end of the spine must be further right
+  // than the near end rather than everything landing on one pile.
+  const x = id => boxes.find(b => b.id === id).x;
+  assert.ok(new Set([0, 1, 2, 3, 4].map(s => x('net/sw' + s))).size >= 3,
+    'the five switches share fewer than three columns, so hop distance did not spread them');
+
+  // A second, unconnected island must be laid out too, not dumped in column 0.
+  const two = await boxesIn(page, `nodes:
+  - {id: loc/room, type: location}
+  - {id: a1, parent: loc/room, pluggables: [{id: p, type: eth, connected_with: 'a2:p'}]}
+  - {id: a2, parent: loc/room, pluggables: [{id: p, type: eth}, {id: q, type: eth, connected_with: 'a3:p'}]}
+  - {id: a3, parent: loc/room, pluggables: [{id: p, type: eth}]}
+  - {id: b1, parent: loc/room, pluggables: [{id: p, type: eth, connected_with: 'b2:p'}]}
+  - {id: b2, parent: loc/room, pluggables: [{id: p, type: eth}, {id: q, type: eth, connected_with: 'b3:p'}]}
+  - {id: b3, parent: loc/room, pluggables: [{id: p, type: eth}]}
+`);
+  const at = id => two.find(b => b.id === id).x;
+  for (const island of ['a', 'b']) {
+    assert.equal(new Set([1, 2, 3].map(i => at(island + i))).size, 3,
+      `island ${island} drew in one column: a disconnected component was not laid out`);
+  }
+
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('a declared direction still orders the chain when other cables have none', async () => {
+  const page = await open();
+  // A directed power chain, then an undirected ethernet tail hanging off it.
+  const boxes = await boxesIn(page, `nodes:
+  - {id: loc/room, type: location}
+  - {id: pwr/ups, parent: loc/room, pluggables: [{id: o, type: power, dir: out, connected_with: 'net/router:pwr'}]}
+  - id: net/router
+    parent: loc/room
+    pluggables:
+      - {id: pwr, type: power, dir: in}
+      - {id: lan, type: eth, connected_with: 'net/sw1:up'}
+  - {id: net/sw1, parent: loc/room, pluggables: [{id: up, type: eth}, {id: dn, type: eth, connected_with: 'net/sw2:up'}]}
+  - {id: net/sw2, parent: loc/room, pluggables: [{id: up, type: eth}, {id: dn, type: eth, connected_with: 'net/sw3:up'}]}
+  - {id: net/sw3, parent: loc/room, pluggables: [{id: up, type: eth}]}
+`);
+  const x = id => boxes.find(b => b.id === id).x;
+
+  assert.ok(x('pwr/ups') < x('net/router'),
+    'the declared power direction stopped ordering the chain: the UPS is no longer left of what it feeds');
+  // The undirected tail extends that chain rightwards instead of restarting at
+  // column 0, which is where the far switches used to land.
+  assert.ok(x('net/router') <= x('net/sw1') && x('net/sw1') < x('net/sw2') && x('net/sw2') < x('net/sw3'),
+    'the undirected ethernet tail did not follow the directed chain: '
+    + JSON.stringify(boxes.map(b => [b.id, b.x])));
+
+  noErrs(page);
+  await page.ctx.close();
+});
+
+// A cable can record the colour it actually is, and the graph draws it in that
+// colour, which is how you find it behind the desk. Most patch cables are black,
+// and #000000 against the #1b1e24 graph background is 1.26:1: recorded, drawn,
+// and invisible. Recolouring it to something legible would lie about the one
+// fact being used, so the cable keeps its colour and a pale casing goes under
+// it. WCAG 2.1 SC 1.4.11 wants 3:1 of a graphical object that carries meaning.
+const BG_RGB = [0x1b, 0x1e, 0x24];
+const lumOf = ([r, g, b]) => {
+  const c = v => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; };
+  return 0.2126 * c(r) + 0.7152 * c(g) + 0.0722 * c(b);
+};
+// What the eye actually receives: a stroke drawn at opacity < 1 is that colour
+// mixed with the background behind it, so measure the mix and not the attribute.
+const overBg = (rgb, alpha) => rgb.map((v, i) => alpha * v + (1 - alpha) * BG_RGB[i]);
+const ratioOnBg = (rgb, alpha) => {
+  const a = lumOf(overBg(rgb, alpha)), b = lumOf(BG_RGB);
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+};
+
+// Read the cables the way a user sees them: every path in each cable's group,
+// with the colour the browser resolved it to, in document order so "underneath"
+// is checkable.
+const cablePaths = (page, yaml) => page.evaluate(yaml => {
+  ingest(yaml, 'x.yaml');
+  S.sel = { kind: 'view', id: 'graph' };
+  render();
+  const svg = document.querySelector('#view svg');
+  if (!svg) return [];
+  const out = [];
+  for (const t of svg.querySelectorAll('title')) {
+    if (!t.textContent.includes(' <-> ')) continue;
+    const grp = t.parentElement.parentElement;    // title -> hit path -> cable group
+    out.push({
+      refs: t.textContent.split('   ')[0].trim(),
+      paths: [...grp.querySelectorAll('path')].map(p => {
+        const cs = getComputedStyle(p);
+        return {
+          attr: p.getAttribute('stroke'),
+          rgb: (cs.stroke.match(/\d+/g) || []).slice(0, 3).map(Number),
+          alpha: parseFloat(cs.opacity) * parseFloat(cs.strokeOpacity || 1),
+          width: parseFloat(p.getAttribute('stroke-width')),
+          casing: p.getAttribute('class') === 'casing',
+        };
+      }),
+    });
+  }
+  return out;
+}, yaml);
+
+await test('a cable too dark to see gets a casing and keeps its own colour', async () => {
+  const page = await open();
+  // Named and hex spellings of the same invisible cable, plus one that is
+  // perfectly visible already and must be left alone.
+  const cables = await cablePaths(page, `nodes:
+  - {id: loc/room, type: location}
+  - id: net/sw
+    parent: loc/room
+    pluggables:
+      - {id: p0, type: eth}
+      - {id: p1, type: eth}
+      - {id: p2, type: eth}
+  - {id: kit/one, parent: loc/room, pluggables: [{id: eth0, type: eth}]}
+  - {id: kit/two, parent: loc/room, pluggables: [{id: eth0, type: eth}]}
+  - {id: kit/three, parent: loc/room, pluggables: [{id: eth0, type: eth}]}
+links:
+  - {a: 'net/sw:p0', b: 'kit/one:eth0', meta: {colour: black}}
+  - {a: 'net/sw:p1', b: 'kit/two:eth0', meta: {colour: '#000000'}}
+  - {a: 'net/sw:p2', b: 'kit/three:eth0', meta: {colour: orange}}
+`);
+  assert.equal(cables.length, 3, 'the fixture did not draw three cables, got ' + cables.length);
+
+  const by = ref => {
+    const c = cables.find(x => x.refs.includes(ref));
+    assert.ok(c, 'no cable drawn for ' + ref + ', saw ' + JSON.stringify(cables.map(x => x.refs)));
+    // the fat transparent hit path is not a colour anybody sees
+    const drawn = c.paths.filter(p => p.attr !== 'transparent');
+    const wire = drawn.find(p => !p.casing);
+    assert.ok(wire, 'cable ' + ref + ' drew no visible line at all');
+    return { c, drawn, wire, casing: drawn.find(p => p.casing) };
+  };
+
+  for (const [ref, spelling] of [['kit/one', 'black'], ['kit/two', '#000000']]) {
+    const { drawn, wire, casing } = by(ref);
+    // it is still black: the point of recording a colour is that it is true
+    assert.equal(wire.attr, spelling, `the ${spelling} cable was silently recoloured to ` + wire.attr);
+    const wireRatio = ratioOnBg(wire.rgb, wire.alpha);
+    assert.ok(wireRatio < 3,
+      `the ${spelling} fixture proves nothing: its own stroke is already ${wireRatio.toFixed(2)}:1`);
+
+    assert.ok(casing, `a ${spelling} cable is ${wireRatio.toFixed(2)}:1 against the graph background `
+      + 'and got no casing, so it is drawn and invisible');
+    const casingRatio = ratioOnBg(casing.rgb, casing.alpha);
+    assert.ok(casingRatio >= 3,
+      `the casing under the ${spelling} cable is itself only ${casingRatio.toFixed(2)}:1, need 3:1`);
+    assert.ok(casing.width > wire.width,
+      `the casing is ${casing.width} wide under a ${wire.width} cable, so none of it shows`);
+    assert.ok(drawn.indexOf(casing) < drawn.indexOf(wire),
+      `the casing is drawn over the ${spelling} cable instead of under it`);
+  }
+
+  // orange is 8.45:1 on this background. A casing there would be noise.
+  const vis = by('kit/three');
+  assert.equal(vis.wire.attr, 'orange', 'the orange cable was recoloured to ' + vis.wire.attr);
+  assert.ok(ratioOnBg(vis.wire.rgb, vis.wire.alpha) >= 3, 'the orange fixture is not actually visible');
+  assert.equal(vis.casing, undefined,
+    'a clearly visible colour got a casing anyway, which makes the diagram noisy');
+
+  noErrs(page);
+  await page.ctx.close();
+});
+
 await test('a drag that starts on a node pans instead of opening it', async () => {
   const page = await open();
   await load(page);
