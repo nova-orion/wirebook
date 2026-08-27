@@ -138,7 +138,13 @@ nav .row:hover { background: var(--panel2); }
 nav .row.on { background: #24405f; }
 nav .row .count { margin-left: auto; color: var(--dim2); font-size: 11px; }
 nav .row .tw { width: 12px; color: var(--dim2); text-align: center; }
-nav .row .lbl { overflow: hidden; text-overflow: ellipsis; }
+/* Both can be cut, and min-width:0 is what lets a flex item shrink below its
+   content at all. The purpose gives way before the name does. */
+nav .row .lbl { overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
+nav .row .sub {
+  color: var(--dim2); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; flex: 0 2 auto; min-width: 0;
+}
 
 section { overflow: auto; padding: 14px 18px 60px; min-width: 0; }
 section h2 { margin: 0 0 2px; font-size: 15px; }

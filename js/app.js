@@ -1470,17 +1470,22 @@ function renderHeader(probs) {
   if (S.savedAt) box.append(el('span', { class: 'stat' }, ' saved ' + S.savedAt));
 }
 
-function navRow(label, sel, count, depth = 0, twist = '') {
+function navRow(label, sel, count, depth = 0, twist = '', node = null) {
   const on = S.sel.kind === sel.kind && S.sel.id === sel.id;
   // an <a> so it is keyboard reachable and copy-link-able, styled as a row
   return el('a', {
     class: 'row' + (on ? ' on' : ''),
     href: selToHash(sel),
     style: `padding-left:${10 + depth * 13}px`,
+    // The row is ellipsised by the stylesheet, so without this the end of a
+    // long name is simply unreachable. It also carries the facts there is no
+    // width to show inline.
+    title: node ? nodeTip(node) : label,
     onclick: e => { e.preventDefault(); S.sel = sel; render(); },
   },
     el('span', { class: 'tw' }, twist),
     el('span', { class: 'lbl' }, label),
+    node && node.sublabel ? el('span', { class: 'sub' }, node.sublabel) : null,
     count == null ? null : el('span', { class: 'count' }, String(count)),
   );
 }
@@ -1662,7 +1667,7 @@ function renderNav(ix) {
       const walk = (parent, depth) => {
         for (const l of locs.filter(x => (byId.has(x.parent) ? x.parent : '') === parent)) {
           const inside = S.inv.nodes.filter(n => n.parent === l.id && n.type !== 'location').length;
-          inv.append(navRow(l.label || l.id, { kind: 'node', id: l.id }, inside || null, depth, '▪'));
+          inv.append(navRow(l.label || l.id, { kind: 'node', id: l.id }, inside || null, depth, '▪', l));
           walk(l.id, depth + 1);
         }
       };
@@ -1671,7 +1676,7 @@ function renderNav(ix) {
     for (const ns of [...groups.keys()].sort()) {
       inv.append(el('h5', {}, ns));
       for (const n of groups.get(ns).sort((a, b) => a.id < b.id ? -1 : 1)) {
-        inv.append(navRow(n.label || n.id, { kind: 'node', id: n.id }, n.pluggables.length || null, 0));
+        inv.append(navRow(n.label || n.id, { kind: 'node', id: n.id }, n.pluggables.length || null, 0, '', n));
       }
     }
   } else {
@@ -3049,9 +3054,12 @@ function renderTree(v, ix) {
       row.append(el('a', {
         href: selToHash({ kind: 'node', id: n.id }),
         style: 'text-decoration:none',
-        title: 'open this node; the tree stays behind the dialog',
+        title: nodeTip(n) + '\n\nopens in a dialog; the tree stays behind it',
         onclick: e => { e.preventDefault(); S.sel = { kind: 'node', id: n.id }; render(); },
       }, n.label || n.id));
+      // What it is for, right next to what it is called. Two nodes both named
+      // "Orange Pi" are only telling you anything once this is on the row.
+      if (n.sublabel) row.append(el('span', { class: 'faint' }, n.sublabel));
       if (n.type) row.append(el('span', {
         class: 'chip', style: 'cursor:pointer', title: 'filter to everything of this type',
         onclick: e => { e.stopPropagation(); S.navQ = n.type; render(); },
@@ -3192,6 +3200,28 @@ const gtext = (attrs, full, max) => {
   if (full.length <= max) return t;
   return svgEl('g', {}, svgEl('title', {}, full), t);
 };
+// What a node is, beyond its name: the purpose it was given, what it answers to
+// on the network, and what it was tagged with. This used to be graph-only, so
+// moving a purpose out of a label and into its own field made it vanish
+// from the tree and the sidebar, which is worse than having it crammed in.
+function identityLines(n) {
+  const out = [];
+  if (n.sublabel) out.push({ text: n.sublabel, fill: '#8b95a5', size: '10', perChar: 6 });
+  if (n.hostname) out.push({ text: n.hostname, fill: '#8faa9b', size: '9', perChar: 5.4 });
+  if (S.gtags && n.tags && n.tags.length) {
+    out.push({ text: n.tags.join(' '), fill: '#7f9ec9', size: '9', perChar: 5.4 });
+  }
+  return out;
+}
+
+// The same facts as one hover string, for rows that a stylesheet cut short.
+function nodeTip(n) {
+  return (n.label || n.id)
+    + (n.sublabel ? '  ·  ' + n.sublabel : '')
+    + '\n' + n.id
+    + (n.hostname ? '\n' + n.hostname : '')
+    + (n.tags && n.tags.length ? '\ntags: ' + n.tags.join(' ') : '');
+}
 const WIRE = { eth: '#6ea8fe', power: '#f0c674', usb: '#b8a2e3', hdmi: '#5dd39e', dp: '#5dd39e', sata: '#e08a5f', pcie: '#e08a5f' };
 const GFONT = 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
 const BOX_W = 196, HEAD_H = 24, ROW_H = 15, PAD_Y = 26, COL_GAP = 118;
@@ -3333,8 +3363,9 @@ function renderGraph(v, ix) {
     const shown = n.pluggables.filter(p => live.has(n.id + ':' + p.id));
     // a virtual guest has no sockets, so it gets a header and nothing else
     const rows = n.virtual ? shown.length : Math.max(shown.length, 1);
-    const hdr = HEAD_H + (n.sublabel ? 11 : 0)
-      + (S.gtags && n.tags && n.tags.length ? 11 : 0);   // room for the extra lines
+    // room for whichever identity lines this node actually has, in the same
+    // order drawLines() below stacks them
+    const hdr = HEAD_H + 11 * identityLines(n).length;
     const headH = hdr + rows * ROW_H + 8;
     let cy = y + headH;
     const kids = kidsOf.get(n.id) || [];
@@ -3614,6 +3645,10 @@ function renderGraph(v, ix) {
     });
     // Nested boxes step lighter with depth so containment is legible without
     // reading a single label, and a guest is dashed since it has no sockets.
+    // The box's own title goes in first, so a hover anywhere inside it that is
+    // not over a label of its own still names the node. SVG takes the first
+    // <title> child, and appending it last would leave that to chance.
+    box.append(svgEl('title', {}, nodeTip(n)));
     const shade = ['#21252d', '#262b34', '#2b313b', '#31374253'][Math.min(depth, 3)];
     const onChain = litNodes.has(n.id);
     const dimmed = litNodes.size > 0 && !onChain;
@@ -3628,25 +3663,18 @@ function renderGraph(v, ix) {
     const freeCount0 = n.pluggables.filter(pp => Core.slotsLeft(ix, n.id, pp) > 0).length;
     const corner0 = n.virtual ? 'guest' : (freeCount0 > 0 ? freeCount0 + ' free' : '');
     const nameW = Math.max(6, Math.floor((w - 22) / 7) - (corner0 ? corner0.length + 1 : 0));
-    // Before the rect and the rows, so a hover anywhere in the box that is not
-    // over a label of its own falls back to the whole identity of the node.
-    box.prepend(svgEl('title', {},
-      (n.label || n.id) + (n.sublabel ? '  ·  ' + n.sublabel : '') + '\n' + n.id
-      + (n.tags && n.tags.length ? '\ntags: ' + n.tags.join(' ') : '')));
     box.append(gtext({
       x: x + 9, y: y + 16, fill: n.virtual ? '#9aa3b2' : '#e4e7ec',
       'font-size': depth ? '11' : '12', 'font-family': GFONT,
     }, n.label || n.id, nameW));
-    if (n.sublabel) {
+    // Stacked in whatever order identityLines() returns, so a line can be added
+    // there without every y offset below it having to be recomputed by hand.
+    let ly = y + 16;
+    for (const ln of identityLines(n)) {
+      ly += 11;
       box.append(gtext({
-        x: x + 9, y: y + 27, fill: '#8b95a5', 'font-size': '10', 'font-family': GFONT,
-      }, n.sublabel, Math.floor((w - 18) / 6)));
-    }
-    if (S.gtags && n.tags && n.tags.length) {
-      box.append(gtext({
-        x: x + 9, y: y + (n.sublabel ? 38 : 27), fill: '#7f9ec9',
-        'font-size': '9', 'font-family': GFONT,
-      }, n.tags.join(' '), Math.floor((w - 18) / 5.4)));
+        x: x + 9, y: ly, fill: ln.fill, 'font-size': ln.size, 'font-family': GFONT,
+      }, ln.text, Math.floor((w - 18) / ln.perChar)));
     }
     // the right-hand corner shows what is still free, or that this is a guest
     const corner = corner0;

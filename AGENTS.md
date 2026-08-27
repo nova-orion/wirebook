@@ -316,11 +316,25 @@ Ordered, because skipping a step silently loses data:
    `META_KEYS` and the schema agree.
 5. A test proving it survives load → save. Without this, step 2 or 3 being
    missed means the UI erases the field on the next save.
-6. Surface it in the UI, or it is undiscoverable.
+6. Surface it in the UI, or it is undiscoverable. If it answers *which one is
+   this*, that means **every** view, not one of them.
 
 Step 3 is the one that gets forgotten. `absorb()` ignoring an unknown field means
 a load-then-save cycle **deletes user data**, and the fingerprint check will not
 notice because it only covers nodes, ports and cables.
+
+Step 6 is bigger than it looks. `sublabel` shipped drawn in the graph and nowhere
+else, so telling a user to move a node's purpose out of its label and into the
+new field made that purpose disappear from the tree and the sidebar. Two rows
+both reading "Orange Pi" are strictly worse than one row reading "Orange Pi,
+the router one", which is what the change was supposed to improve on. Identity
+fields go through `identityLines()` and `nodeTip()`, which the graph, the tree
+and the sidebar all read, rather than being drawn at one call site.
+
+Its corollary: any label a view has to shorten needs the whole of it on hover. In
+SVG use `gtext()`, which puts the `<title>` on a wrapping `<g>`. A `<title>`
+placed inside a `<text>` lands in that element's `textContent`, corrupting the
+label for anything that measures or asserts on it.
 
 ## Style
 

@@ -473,6 +473,11 @@ view called View. Beyond that:
   zooms toward the pointer. `labels` and `tags` toggle what is written on the
   cables and under each node's name. A box is only so wide, so anything too long
   to fit is cut with an ellipsis and hovering it shows the whole thing.
+- **Identity everywhere.** `label` is what the thing is, `sublabel` is what it is
+  for, `hostname` is what it answers to. Two boxes both called "Orange Pi" say
+  nothing, so the sidebar, the tree and the graph all show the sublabel and the
+  hostname next to the name rather than making you open the node to find out
+  which one you are looking at.
 - **Back** works. Every view and node is a real URL, so the browser's back button
   walks back through where you have been, and any view can be bookmarked.
 - Every labelled control carries its own one-line explanation, rather than a

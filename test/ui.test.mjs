@@ -30,6 +30,7 @@ function makeDom(settingsYaml) {
     get innerHTML() { return this._html || ''; }
     set innerHTML(v) { this._html = String(v); }
     append(...k) { for (const x of k) if (x != null) this.children.push(x); }
+    prepend(...k) { this.children.unshift(...k.filter(x => x != null)); }
     appendChild(x) { this.children.push(x); return x; }
     replaceChildren(...k) { this.children = k.filter(x => x != null); }
     insertBefore(x) { this.children.unshift(x); return x; }
@@ -97,10 +98,11 @@ function makeDom(settingsYaml) {
   return vm.createContext(ctx);
 }
 
-let pass = 0;
+let pass = 0, fail = 0;
 const test = (name, fn) => {
   try { fn(); pass++; console.log('  ok   ' + name); }
   catch (e) {
+    fail++;
     console.error('  FAIL ' + name + '\n       ' + String(e && e.stack || e).split('\n').slice(0, 4).join('\n       '));
     process.exitCode = 1;
   }
@@ -236,4 +238,4 @@ test('an unchanged edit does not stack a no-op undo', () => {
     'a no-op edit pushed a history entry, which makes the next undo do nothing');
 });
 
-console.log('\n' + pass + ' passed');
+console.log('\n' + pass + ' passed' + (fail ? ', ' + fail + ' FAILED' : ''));

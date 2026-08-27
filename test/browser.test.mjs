@@ -1080,6 +1080,51 @@ await test('the reason saving falls back to a download names the real cause', as
   await page.ctx.close();
 });
 
+await test('purpose and hostname show in every view, not just the graph', async () => {
+  // Two nodes with the same name, told apart only by what they are for. This
+  // is the shape that made moving purpose out of the label a regression: the
+  // sublabel was drawn in the graph and nowhere else, so the tree and sidebar
+  // showed the same word twice and said nothing. Invented names, not anyone's
+  // real ones: fixtures in a public repo are published network documentation.
+  const page = await open();
+  await page.evaluate(y => ingest(y, 'x.yaml'), `nodes:
+  - {id: sbc/one, label: Single board, sublabel: router duty, type: server, hostname: alpha.example}
+  - {id: sbc/two, label: Single board, sublabel: secrets duty, type: server, hostname: beta.example}
+`);
+  const sidebar = await page.evaluate(() => [...document.querySelectorAll('nav .row')]
+    .map(r => ({ text: r.textContent, title: r.getAttribute('title') })));
+  for (const want of ['router duty', 'secrets duty']) {
+    assert.ok(sidebar.some(r => r.text.includes(want)), `sidebar hides ${want}`);
+  }
+  // the sidebar ellipsises, so the row has to carry the whole of it on hover
+  assert.ok(sidebar.some(r => /sbc\/one/.test(r.title || '') && /alpha\.example/.test(r.title)),
+    'no sidebar tooltip with the id and hostname: ' + JSON.stringify(sidebar));
+
+  await nav(page, 'Tree');
+  const tree = await page.evaluate(() =>
+    [...document.querySelectorAll('.treerow')].map(r => r.textContent));
+  for (const want of ['router duty', 'secrets duty', 'alpha.example', 'beta.example']) {
+    assert.ok(tree.some(t => t.includes(want)), `tree hides ${want}: ` + JSON.stringify(tree));
+  }
+
+  await nav(page, 'Graph');
+  const graph = await page.evaluate(() =>
+    [...document.querySelectorAll('#view svg text')].map(t => t.textContent));
+  for (const want of ['router duty', 'secrets duty', 'alpha.example', 'beta.example']) {
+    assert.ok(graph.includes(want), `graph hides ${want}: ` + JSON.stringify(graph));
+  }
+  // an extra identity line must make the box taller, not land on the line below
+  const collide = await page.evaluate(() => {
+    const ts = [...document.querySelectorAll('#view svg text')];
+    return ts.some((t, i) => ts.slice(i + 1).some(o =>
+      Math.abs(+o.getAttribute('y') - +t.getAttribute('y')) < 4
+      && Math.abs(+o.getAttribute('x') - +t.getAttribute('x')) < 40));
+  });
+  assert.ok(!collide, 'two identity lines overlap in the graph');
+  noErrs(page);
+  await page.ctx.close();
+});
+
 await test('node tags can be shown in the graph and are off by default', async () => {
   const page = await open();
   await load(page, 'inventory.demo.yaml');
