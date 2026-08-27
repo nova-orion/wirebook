@@ -27,6 +27,7 @@ nodes:
     note: no sockets of its own; it is here to answer what dies with the host
   - id: compute/pi
     label: Raspberry Pi
+    sublabel: spare
     type: server
     parent: loc/desk
     pluggables:
@@ -39,6 +40,7 @@ nodes:
         dir: in
   - id: compute/server
     label: Mini PC
+    sublabel: hypervisor
     type: server
     hostname: srv1.lan
     parent: loc/cupboard
@@ -69,6 +71,7 @@ nodes:
         connected_with: power/strip:out2
   - id: compute/server-nvme
     label: 1TB NVMe
+    sublabel: in the Mini PC
     type: disk
     parent: compute/server
     meta:
@@ -91,7 +94,8 @@ nodes:
     label: Flat
     type: location
   - id: misc/dp-hdmi
-    label: DP to HDMI adapter
+    label: DP to HDMI
+    sublabel: adapter cable
     type: adapter
     parent: loc/desk
     pluggables:
@@ -104,6 +108,7 @@ nodes:
         connected_with: misc/monitor:hdmi1
   - id: misc/monitor
     label: Monitor
+    sublabel: desk
     type: display
     parent: loc/desk
     pluggables:
@@ -119,6 +124,7 @@ nodes:
         connected_with: power/wall-desk:right
   - id: net/ap
     label: Ceiling AP
+    sublabel: PoE, no brick
     type: ap
     parent: loc/flat
     note: powered over the ethernet run, so it has no brick of its own
@@ -127,7 +133,8 @@ nodes:
         type: eth
         untagged: 20
   - id: net/switch
-    label: 8 port managed switch
+    label: Switch
+    sublabel: 8 port, managed
     type: switch
     parent: loc/cupboard
     meta:
@@ -158,6 +165,7 @@ nodes:
         connected_with: power/psu-switch:out
   - id: power/psu-switch
     label: Switch PSU
+    sublabel: 12V barrel
     type: adapter
     parent: loc/cupboard
     meta:
@@ -175,7 +183,8 @@ nodes:
         meta:
           tip: barrel
   - id: power/strip
-    label: Power strip, 4 socket
+    label: Power strip
+    sublabel: 4 socket
     type: strip
     parent: loc/cupboard
     pluggables:
@@ -196,6 +205,7 @@ nodes:
         dir: out
   - id: power/ups
     label: UPS
+    sublabel: 650W
     type: ups
     parent: loc/cupboard
     note: outlet 2 is unusable, see the note on the cable in outlet 1
@@ -230,7 +240,8 @@ nodes:
         meta:
           plug: c13
   - id: power/usb-charger
-    label: USB charger, 3 port
+    label: USB charger
+    sublabel: 3 port
     type: adapter
     parent: loc/desk
     pluggables:
@@ -249,7 +260,8 @@ nodes:
         dir: out
         reserved: spare
   - id: power/wall-desk
-    label: Wall socket, desk
+    label: Wall socket
+    sublabel: desk
     type: outlet
     parent: loc/desk
     meta:
@@ -284,3 +296,5 @@ links:
     note: the strip's moulded plug overhangs the next outlet
     blocks:
       - power/ups:out2
+    meta:
+      colour: '#e8b862'

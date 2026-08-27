@@ -33,6 +33,18 @@ const Core = (() => {
   const num = v => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : 0; };
   const nums = a => asList(a).map(num);   // Go keeps these; filtering here lost data
 
+  // Tags: a second way to group things, cutting across `type`. Lowercased and
+  // deduped so "Critical" and "critical" are one tag, sorted so a diff of two
+  // files does not depend on the order they were typed in.
+  function cleanTags(v) {
+    const out = new Set();
+    for (const t of asList(v)) {
+      const k = s(t).trim().toLowerCase();
+      if (k) out.add(k);
+    }
+    return [...out].sort();
+  }
+
   function cleanMeta(m) {
     if (!m || typeof m !== 'object' || Array.isArray(m)) return null;
     return Object.keys(m).length ? m : null;
@@ -45,7 +57,7 @@ const Core = (() => {
     for (const raw of asList(doc && doc.fields)) inv.fields.push(readField(raw, src));
     for (const raw of asList(doc && doc.vlans)) {
       inv.vlans.push({
-        id: num(raw.id), name: s(raw.name),
+        id: num(raw.id), name: s(raw.name), tags: cleanTags(raw.tags),
         subnets: [...(raw.subnet ? [s(raw.subnet)] : []), ...asList(raw.subnets).map(s)]
           .filter(Boolean),
         note: s(raw.note), meta: cleanMeta(raw.meta), src,
@@ -56,6 +68,11 @@ const Core = (() => {
       inv.nodes.push({
         id: resolve(s(raw.id), ns),
         label: s(raw.label),
+        // what it IS, on a second line: "Orange Pi" / "gateway". Cramming the
+        // purpose into the label made every box in the graph truncate, and two
+        // boxes both reading "Orange Pi" told you nothing.
+        sublabel: s(raw.sublabel),
+        tags: cleanTags(raw.tags),
         type: s(raw.type),
         virtual: !!raw.virtual,
         hostname: s(raw.hostname),
@@ -88,6 +105,7 @@ const Core = (() => {
         note: s(raw.note),
         planned: !!raw.planned,
         poe: !!raw.poe,
+        tags: cleanTags(raw.tags),
         blocks: asList(raw.blocks).map(x => resolveRef(s(x), ns)),
         meta: cleanMeta(raw.meta),
         src,
@@ -121,13 +139,13 @@ const Core = (() => {
   const KNOWN = {
     doc: ['defaults', 'fields', 'vlans', 'nodes', 'links'],
     defaults: ['namespace', 'parent'],
-    vlan: ['id', 'name', 'subnet', 'subnets', 'note', 'meta'],
+    vlan: ['id', 'name', 'subnet', 'subnets', 'tags', 'note', 'meta'],
     field: ['id', 'label', 'type', 'control', 'unit', 'enum', 'open', 'min', 'max',
       'applies_to', 'parts', 'description', 'meta'],
-    node: ['id', 'label', 'type', 'virtual', 'hostname', 'parent', 'note', 'meta', 'pluggables'],
+    node: ['id', 'label', 'sublabel', 'tags', 'type', 'virtual', 'hostname', 'parent', 'note', 'meta', 'pluggables'],
     plug: ['id', 'type', 'dir', 'connected_with', 'fanout', 'mac', 'ips', 'untagged',
       'tagged', 'reserved', 'label', 'note', 'meta'],
-    link: ['a', 'b', 'label', 'note', 'planned', 'poe', 'blocks', 'meta'],
+    link: ['a', 'b', 'label', 'note', 'planned', 'poe', 'blocks', 'tags', 'meta'],
   };
   function badKeys(obj, allowed, where, out) {
     if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
@@ -446,6 +464,7 @@ const Core = (() => {
       if (l.planned) o.planned = true;
       if (l.poe) o.poe = true;
       if (l.blocks.length) o.blocks = l.blocks.slice().sort();
+      if ((l.tags || []).length) o.tags = l.tags;
       if (l.meta) o.meta = l.meta;
       rich.push(o);
     }
@@ -454,6 +473,8 @@ const Core = (() => {
     const nodes = inv.nodes.map(n => {
       const o = { id: n.id };
       if (n.label) o.label = n.label;
+      if (n.sublabel) o.sublabel = n.sublabel;
+      if ((n.tags || []).length) o.tags = n.tags;
       if (n.type) o.type = n.type;
       if (n.virtual) o.virtual = true;
       if (n.hostname) o.hostname = n.hostname;
@@ -491,6 +512,7 @@ const Core = (() => {
         const o = { id: v.id };
         if (v.name) o.name = v.name;
         if ((v.subnets || []).length) o.subnets = v.subnets;
+        if ((v.tags || []).length) o.tags = v.tags;
         if (v.note) o.note = v.note;
         if (v.meta) o.meta = v.meta;
         return o;

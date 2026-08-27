@@ -115,6 +115,7 @@ type Vlan struct {
 	// and is folded into Subnets on the way in.
 	Subnet  string         `yaml:"subnet"`
 	Subnets []string       `yaml:"subnets"`
+	Tags    []string       `yaml:"tags"`
 	Note    string         `yaml:"note"`
 	Meta    map[string]any `yaml:"meta"`
 
@@ -122,8 +123,13 @@ type Vlan struct {
 }
 
 type Node struct {
-	ID         string         `yaml:"id"`
-	Label      string         `yaml:"label"`
+	ID    string `yaml:"id"`
+	Label string `yaml:"label"`
+	// What it IS, shown on a second line: "Orange Pi" / "gateway". Cramming the
+	// purpose into the label truncated every box in the graph, and two boxes both
+	// reading "Orange Pi" told you nothing.
+	Sublabel   string         `yaml:"sublabel"`
+	Tags       []string       `yaml:"tags"`
 	Type       string         `yaml:"type"`
 	Virtual    bool           `yaml:"virtual"` // a VM or container: no physical ports
 	Hostname   string         `yaml:"hostname"`
@@ -143,6 +149,7 @@ type Link struct {
 	Planned bool           `yaml:"planned"` // intended, not yet run
 	PoE     bool           `yaml:"poe"`
 	Blocks  []string       `yaml:"blocks"`
+	Tags    []string       `yaml:"tags"`
 	Meta    map[string]any `yaml:"meta"`
 
 	src string
@@ -366,6 +373,24 @@ func load(target string) (*Inventory, error) {
 // working directory, so running it from a clone or from an install both work.
 // Missing is not an error: a file that embeds its own specs is self-contained,
 // which is the whole point of embedding them.
+// Lowercased, deduped and sorted, so "Critical" and "critical" are one tag and a
+// diff of two files never depends on the order they were typed in. Mirrors
+// cleanTags in js/core.js.
+func cleanTags(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, t := range in {
+		k := strings.ToLower(strings.TrimSpace(t))
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func loadShippedFields(near string) []Field {
 	var dirs []string
 	if near != "" {
@@ -1134,6 +1159,7 @@ type outVlan struct {
 	ID      int            `yaml:"id"`
 	Name    string         `yaml:"name,omitempty"`
 	Subnets []string       `yaml:"subnets,omitempty"`
+	Tags    []string       `yaml:"tags,omitempty"`
 	Note    string         `yaml:"note,omitempty"`
 	Meta    map[string]any `yaml:"meta,omitempty"`
 }
@@ -1141,6 +1167,8 @@ type outVlan struct {
 type outNode struct {
 	ID         string         `yaml:"id"`
 	Label      string         `yaml:"label,omitempty"`
+	Sublabel   string         `yaml:"sublabel,omitempty"`
+	Tags       []string       `yaml:"tags,omitempty"`
 	Type       string         `yaml:"type,omitempty"`
 	Virtual    bool           `yaml:"virtual,omitempty"`
 	Hostname   string         `yaml:"hostname,omitempty"`
@@ -1158,6 +1186,7 @@ type outLink struct {
 	Planned bool           `yaml:"planned,omitempty"`
 	PoE     bool           `yaml:"poe,omitempty"`
 	Blocks  []string       `yaml:"blocks,omitempty"`
+	Tags    []string       `yaml:"tags,omitempty"`
 	Meta    map[string]any `yaml:"meta,omitempty"`
 }
 
@@ -1206,7 +1235,7 @@ func canonical(inv *Inventory) *outDoc {
 		sort.Strings(blocks)
 		rich = append(rich, outLink{
 			A: a, B: b, Label: l.Label, Note: l.Note,
-			Planned: l.Planned, PoE: l.PoE, Blocks: blocks, Meta: l.Meta,
+			Planned: l.Planned, PoE: l.PoE, Blocks: blocks, Tags: cleanTags(l.Tags), Meta: l.Meta,
 		})
 	}
 	sort.SliceStable(rich, func(i, j int) bool {
@@ -1220,7 +1249,7 @@ func canonical(inv *Inventory) *outDoc {
 	for i := range inv.Nodes {
 		n := &inv.Nodes[i]
 		on := outNode{
-			ID: n.ID, Label: n.Label, Type: n.Type, Virtual: n.Virtual, Hostname: n.Hostname,
+			ID: n.ID, Label: n.Label, Sublabel: n.Sublabel, Tags: cleanTags(n.Tags), Type: n.Type, Virtual: n.Virtual, Hostname: n.Hostname,
 			Parent: n.Parent, Note: n.Note, Meta: n.Meta,
 		}
 		for _, p := range n.Pluggables {
@@ -1248,7 +1277,7 @@ func canonical(inv *Inventory) *outDoc {
 
 	vl := make([]outVlan, 0, len(inv.Vlans))
 	for _, v := range inv.Vlans {
-		vl = append(vl, outVlan{ID: v.ID, Name: v.Name, Subnets: v.Subnets, Note: v.Note, Meta: v.Meta})
+		vl = append(vl, outVlan{ID: v.ID, Name: v.Name, Subnets: v.Subnets, Tags: cleanTags(v.Tags), Note: v.Note, Meta: v.Meta})
 	}
 	sort.SliceStable(vl, func(i, j int) bool { return vl[i].ID < vl[j].ID })
 

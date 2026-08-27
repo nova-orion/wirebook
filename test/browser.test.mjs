@@ -730,6 +730,19 @@ await test('a VLAN takes as many prefixes as it carries', async () => {
   const row = page.locator('#view tbody tr', { has: page.locator('input[value="10"]') }).first();
   await row.locator('button:text-is("+ prefix")').click();
   await page.waitForTimeout(60);
+
+  // the empty row must NOT be in the model yet: pushing a placeholder into
+  // subnets made the whole document unsaveable, because the parser drops empty
+  // entries on read-back and the fingerprints then disagree
+  assert.equal(await page.evaluate(() =>
+    S.inv.vlans.find(v => v.id === 10).subnets.length), before,
+  'the empty prefix row was written into the model');
+  assert.doesNotThrow(() => {}, 'placeholder');
+  const stillSaves = await page.evaluate(() => {
+    try { currentYaml(); return true; } catch { return false; }
+  });
+  assert.equal(stillSaves, true, 'adding an empty prefix row made the document unsaveable');
+
   const box = row.locator('input[style*="190px"]').last();
   await box.fill('10.0.11.0/24');
   await box.dispatchEvent('change');
@@ -752,6 +765,275 @@ await test('the old single subnet key still loads and is migrated', async () => 
   assert.deepEqual(got.subnets, ['10.0.7.0/24'], 'the old key was dropped');
   assert.match(got.out, /subnets:/, 'it should be written back in the list form');
   assert.ok(!/^\s*subnet:/m.test(got.out), 'the deprecated key should not be written back');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('a sublabel shows on a second line instead of truncating', async () => {
+  const page = await open();
+  await load(page, 'inventory.demo.yaml');
+  await nav(page, 'Graph');
+  await page.waitForSelector('#view svg g[data-node]');
+
+  const box = await page.evaluate(() => {
+    const g = document.querySelector('[data-node="power/strip"]');
+    if (!g) return null;
+    const t = [...g.querySelectorAll('text')].map(x => x.textContent.trim());
+    return { texts: t, rect: +g.querySelector('rect').getAttribute('height') };
+  });
+  assert.ok(box, 'the strip is not drawn');
+  assert.ok(box.texts.includes('Power strip'), 'label missing: ' + box.texts.join('|'));
+  assert.ok(box.texts.includes('4 socket'), 'sublabel missing: ' + box.texts.join('|'));
+  assert.ok(!box.texts.some(t => t.includes('\u2026')), 'something still truncates: ' + box.texts.join('|'));
+
+  // the taller header must not push the cables through the wrong port row
+  const off = await page.evaluate(() => {
+    const g = document.querySelector('[data-node="power/strip"]');
+    const dot = [...g.querySelectorAll('circle')][0];
+    const label = [...g.querySelectorAll('text')].find(t => t.textContent.trim() === 'inlet');
+    return Math.abs(+dot.getAttribute('cy') - (+label.getAttribute('y') - 3));
+  });
+  assert.ok(off <= 1, 'the socket dot is ' + off + 'px off its port row');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('tracing a video cable does not light the power chain', async () => {
+  const page = await open();
+  await load(page, 'inventory.demo.yaml');
+  await nav(page, 'Graph');
+  const r = await page.evaluate(() => {
+    const ix = Core.index(S.inv);
+    const links = S.inv.links.filter(l => ix.portByRef.has(l.a) && ix.portByRef.has(l.b));
+    const AV = ['hdmi', 'dp', 'dvi', 'vga', 'audio'];
+    const bucketsOf = l => {
+      const p = ix.portByRef.get(l.a); const t = p ? p.port.type : '';
+      const base = t === 'eth' ? 'eth' : t === 'power' ? 'power' : t === 'usb' ? 'usb'
+        : AV.includes(t) ? 'av' : 'other';
+      const out = new Set([base]); const says = l.meta && l.meta.carries;
+      if (says === 'power') { out.add('power'); if (base !== 'power') out.delete(base); }
+      if (says === 'both') out.add('power');
+      if (l.poe) out.add('power');
+      return out;
+    };
+    const go = ref => {
+      const l = links.find(x => x.a === ref || x.b === ref);
+      const c = tracedChain(links, { a: l.a, b: l.b }, ix, bucketsOf);
+      return [...c.nodes].sort();
+    };
+    return { video: go('misc/dp-hdmi:out'), power: go('compute/server:psu') };
+  });
+  // upstream of a video cable is the video source, not the machine's mains feed
+  assert.ok(!r.video.some(n => /wall|ups|strip/.test(n)),
+    'a video trace wandered into the power chain: ' + r.video.join(', '));
+  // and a power run still traces all the way back to the socket
+  assert.ok(r.power.some(n => /wall/.test(n)),
+    'a power trace stopped short of the wall: ' + r.power.join(', '));
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('an inventory can be loaded from a URL', async () => {
+  const page = await open();
+  await page.click('#bUrl');
+  await page.waitForSelector('#dlgBody input');
+  await page.fill('#dlgBody input', base + 'inventory.demo.yaml');
+  await page.click('#dlgFoot button:text-is("Load")');
+  await page.waitForFunction(() => S.loaded && S.inv.nodes.length > 0);
+
+  assert.match(await page.textContent('#hFile'), /from a URL/,
+    'the header must say the copy came from a URL, since Save cannot write back');
+  assert.match(await page.evaluate(() => location.href), /[?&]url=/,
+    'the address should keep the url so a reload repeats it');
+
+  // and the demo shortcut, which is what a first-time visitor clicks
+  const p2 = await open();
+  await p2.click('#view a:text-is("load the demo")');
+  await p2.waitForFunction(() => S.loaded && S.inv.nodes.length > 0);
+  assert.ok(await p2.evaluate(() => S.inv.nodes.length) >= 10, 'the demo did not load');
+  noErrs(page);
+  await page.ctx.close();
+  await p2.ctx.close();
+});
+
+await test('a long hint collapses instead of burying the view', async () => {
+  const page = await open();
+  await load(page);
+  await nav(page, 'Graph');
+  // the help above the graph had grown to a third of the window
+  const h = await page.evaluate(() => {
+    const d = document.querySelector('#view details.hint');
+    if (!d) return null;
+    return { open: d.open, height: Math.round(d.getBoundingClientRect().height),
+      summary: d.querySelector('summary').textContent.trim() };
+  });
+  assert.ok(h, 'the graph hint is not collapsible');
+  assert.equal(h.open, false, 'it should start collapsed');
+  assert.ok(h.height < 40, 'collapsed it still takes ' + h.height + 'px');
+  assert.ok(h.summary.length < 40, 'the summary is itself a paragraph');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('a recorded cable colour shows in the table and the graph', async () => {
+  const page = await open();
+  await load(page, 'inventory.demo.yaml');
+
+  await nav(page, 'Cables');
+  const heads = await page.locator('#view th').allTextContents();
+  assert.ok(heads.includes('colour'), 'colour is not a column: ' + heads.join(','));
+
+  // the demo records one, and the graph must draw that cable in it
+  const drawn = await page.evaluate(() => {
+    S.sel = { kind: 'view', id: 'graph' }; render();
+    const want = S.inv.links.find(l => l.meta && l.meta.colour);
+    if (!want) return { none: true };
+    const strokes = [...document.querySelectorAll('#view svg path[stroke]')]
+      .map(p => p.getAttribute('stroke').toLowerCase());
+    return { colour: want.meta.colour.toLowerCase(), strokes };
+  });
+  assert.ok(!drawn.none, 'the demo should record a cable colour');
+  assert.ok(drawn.strokes.includes(drawn.colour),
+    `no line drawn in ${drawn.colour}: ${[...new Set(drawn.strokes)].join(',')}`);
+
+  // setting one from the table reaches the file
+  await nav(page, 'Cables');
+  const cell = page.locator('#view tbody tr').first().locator('input[placeholder^="blue"]');
+  await cell.fill('rebeccapurple');
+  await cell.dispatchEvent('change');
+  await page.waitForTimeout(80);
+  assert.match(await page.evaluate(() => currentYaml()), /colour: rebeccapurple/,
+    'the colour did not reach the file');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('ctrl+z in a text box undoes the typing, not the document', async () => {
+  const page = await open();
+  await load(page);
+  const before = await page.evaluate(() => currentYaml());
+
+  await page.evaluate(() => { S.sel = { kind: 'node', id: 'compute/srv-1' }; render(); });
+  const box = page.locator('#nodeBody label:text-is("label") + div input');
+  await box.click();
+  await box.type('xyz');
+  await page.keyboard.press('Control+z');
+  await page.waitForTimeout(80);
+
+  // the document must be untouched: rolling it back mid-edit looks like the app
+  // throwing your work away
+  assert.equal(await page.evaluate(() => currentYaml()), before,
+    'ctrl+z while typing rolled back the whole document');
+
+  // outside a text box it still undoes properly
+  await page.evaluate(() => { S.inv.nodes[0].label = 'changed'; touched(); });
+  assert.notEqual(await page.evaluate(() => currentYaml()), before);
+  await page.evaluate(() => document.body.focus());
+  await page.keyboard.press('Control+z');
+  await page.waitForTimeout(120);
+  assert.equal(await page.evaluate(() => currentYaml()), before, 'undo stopped working entirely');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('the filter narrows every view, not just the sidebar', async () => {
+  const page = await open();
+  await load(page, 'inventory.demo.yaml');
+  await page.evaluate(() => {
+    // tag two things so there is something to select that type cannot express
+    S.inv.nodes.find(n => n.id === 'power/ups').tags = ['battery-backed'];
+    S.inv.nodes.find(n => n.id === 'power/strip').tags = ['battery-backed'];
+    touched();
+  });
+
+  const counts = async q => {
+    await page.evaluate(v => { S.navQ = v; render(); }, q);
+    const o = {};
+    await page.evaluate(() => { S.sel = { kind: 'view', id: 'tree' }; render(); });
+    o.tree = await page.locator('#view .treerow').count();
+    await page.evaluate(() => { S.sel = { kind: 'view', id: 'graph' }; render(); });
+    o.graph = await page.locator('#view svg g[data-node]').count();
+    await page.evaluate(() => { S.sel = { kind: 'view', id: 'free' }; render(); });
+    o.free = await page.locator('#view tbody tr').count();
+    await page.evaluate(() => { S.sel = { kind: 'view', id: 'cables' }; render(); });
+    o.cables = await page.locator('#view tbody tr').count();
+    o.note = (await page.locator('#view .filternote').count()) > 0;
+    return o;
+  };
+
+  const all = await counts('');
+  assert.equal(all.note, false, 'an unfiltered view should not claim to be filtered');
+
+  // by type, which is the commonest thing you want and was impossible before
+  const sw = await counts('switch');
+  for (const k of ['tree', 'graph', 'free', 'cables']) {
+    assert.ok(sw[k] < all[k], `${k} did not narrow for a type filter: ${sw[k]} of ${all[k]}`);
+  }
+  assert.equal(sw.note, true, 'a filtered view must say so, or you conclude things are missing');
+
+  // by tag, which cuts across type
+  const bat = await counts('battery-backed');
+  assert.ok(bat.tree > 0 && bat.tree < all.tree, 'tag filter did not narrow the tree');
+  assert.ok(bat.graph > 0 && bat.graph < all.graph, 'tag filter did not narrow the graph');
+
+  // and clearing puts everything back
+  await page.click('#view .filternote button');
+  await page.waitForTimeout(60);
+  assert.equal(await page.evaluate(() => S.navQ), '', 'clear did not clear');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('tags round trip and normalise', async () => {
+  const page = await open();
+  const got = await page.evaluate(() => {
+    ingest('nodes:\n  - {id: a, tags: [Critical, critical, " NET ", ""]}\n', 'x.yaml');
+    return { tags: S.inv.nodes[0].tags, out: currentYaml() };
+  });
+  // lowercased, deduped, sorted, blanks dropped: a diff must not depend on the
+  // order they were typed
+  assert.deepEqual(got.tags, ['critical', 'net'], 'tags were not normalised: ' + JSON.stringify(got.tags));
+  assert.match(got.out, /tags:/, 'tags did not reach the file');
+  noErrs(page);
+  await page.ctx.close();
+});
+
+await test('the yaml view can be edited by hand', async () => {
+  const page = await open();
+  await load(page, 'inventory.demo.yaml');
+  await nav(page, 'YAML');
+  const before = await page.evaluate(() => currentYaml());
+
+  // a real edit applies
+  await page.evaluate(() => {
+    const t = document.querySelector('#view textarea');
+    t.value = t.value.replace('label: UPS', 'label: UPS renamed by hand');
+  });
+  await page.click('#view button:text-is("Apply")');
+  await page.waitForTimeout(120);
+  assert.match(await page.evaluate(() => currentYaml()), /UPS renamed by hand/, 'the edit did not apply');
+
+  // a bad one is refused, and must not half-apply
+  await nav(page, 'YAML');
+  const nodesBefore = await page.evaluate(() => S.inv.nodes.length);
+  await page.evaluate(() => {
+    document.querySelector('#view textarea').value = 'nodes:\n  - {id: a, bogus_key: 1}\n';
+  });
+  await page.click('#view button:text-is("Apply")');
+  await page.waitForTimeout(120);
+  const shown = await page.evaluate(() => {
+    const p = document.querySelector('#view .prob.e');
+    return p && p.style.display !== 'none' ? p.textContent : '';
+  });
+  assert.match(shown, /bogus_key/, 'the refusal did not say what was wrong');
+  assert.equal(await page.evaluate(() => S.inv.nodes.length), nodesBefore,
+    'a refused apply changed the document anyway');
+
+  // and an apply is undoable like any other edit
+  await page.evaluate(() => document.body.focus());
+  await page.keyboard.press('Control+z');
+  await page.waitForTimeout(150);
+  assert.equal(await page.evaluate(() => currentYaml()), before, 'ctrl+z did not undo the apply');
   noErrs(page);
   await page.ctx.close();
 });

@@ -6,6 +6,38 @@ what, via which port, and where you can still plug something in.
 Built for a homelab, but there is nothing homelab-specific in it: racks, desks,
 AV setups and electrical panels all fit the same two primitives.
 
+## What it looks like
+
+The graph. Columns are steps along a cable run, so a wall socket is on the left
+and whatever it eventually feeds is on the right. A box inside a box is
+physically inside it. Clicking a cable traces its run: what feeds it and what it
+goes on to feed, with the exact sockets marked and everything else faded.
+
+![the graph view, tracing a power run from a wall socket through a UPS to a
+switch](docs/screenshots/graph.png)
+
+Free ports, which is the answer to "I am holding a cable, where can it go".
+Blocked means physically unusable rather than occupied, and a socket with fanout
+shows how much room is left in it.
+
+![the free ports view, showing free, reserved and blocked
+sockets](docs/screenshots/free-ports.png)
+
+The tree is containment rather than cabling: places hold devices, devices hold
+cards and drives. Drag a row onto another to move it inside that one.
+
+![the tree view, showing nesting from a flat down to a drive inside a
+server](docs/screenshots/tree.png)
+
+Opening a node puts the editor in a panel over whatever you were reading, so you
+keep your place. It is not a preview: it is the editor.
+
+![the node editor open over the tree, with ports and meta
+fields](docs/screenshots/node-editor.png)
+
+Regenerate them with `node tools/screenshots.mjs`. They are shot against
+`inventory.demo.yaml`, never a real inventory.
+
 ## Why files instead of a service
 
 The data is a YAML file in git. So every edit is a commit, every version is

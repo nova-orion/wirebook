@@ -51,7 +51,7 @@ function makeDom(settingsYaml) {
   const byId = {};
   for (const id of ['hFile', 'hDirty', 'hStat', 'hProb', 'bOpen', 'bSave', 'bUndo',
                     'bRedo', 'bLink', 'nav', 'view', 'menubar', 'dlg', 'dlgHead',
-                    'dlgBody', 'dlgFoot', 'nodeDlg', 'nodeHead', 'nodeBody',
+                    'dlgBody', 'dlgFoot', 'nodeDlg', 'nodeHead', 'nodeBody', 'bUrl',
                     'nodeFoot', 'toast', 'banner']) byId[id] = new N();
   byId.builtinSettings = new N('script');
   byId.builtinSettings.textContent = settingsYaml;
@@ -86,6 +86,7 @@ function makeDom(settingsYaml) {
     clearTimeout() {},
     queueMicrotask: f => f(),
     fetch: () => Promise.reject(new Error('offline in this harness')),
+    URLSearchParams,
     indexedDB: undefined,
     __store: store,
     __byId: byId,

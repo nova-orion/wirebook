@@ -1429,8 +1429,9 @@ function render() {
 
 function renderHeader(probs) {
   $('hFile').textContent = (S.loaded ? S.name : 'no file')
-    + (!canFS ? '  (downloads only)'
-      : (S.loaded && !S.handle ? '  (not linked to a file)' : ''));
+    + (S.sourceUrl ? '  (from a URL)'
+      : !canFS ? '  (downloads only)'
+        : (S.loaded && !S.handle ? '  (not linked to a file)' : ''));
   $('hFile').title = canFS ? '' : whyNoFileWrite();
   $('hDirty').hidden = !S.dirty;
   $('hDirty').title = S.dirty ? 'unsaved changes' : '';
@@ -1537,12 +1538,54 @@ function renderMenu() {
   bar.append(right);
 }
 
+// The filter, shared by every view. Matches type and tags as well as names, so
+// "switch" selects every switch and "battery-backed" selects what stays up.
+function nodeMatches(n) {
+  const q = (S.navQ || '').trim().toLowerCase();
+  if (!q) return true;
+  const hay = [n.id, n.label, n.sublabel, n.hostname, n.type, ...(n.tags || [])]
+    .filter(Boolean).join(' ').toLowerCase();
+  if (hay.includes(q)) return true;
+  return n.pluggables.some(p =>
+    (p.ips || []).some(a => a.toLowerCase().includes(q))
+    || (p.mac || '').toLowerCase().includes(q)
+    || p.id.toLowerCase().includes(q));
+}
+const filtering = () => !!(S.navQ || '').trim();
+
+// A cable is in scope if either end is, or if the cable itself carries the word.
+function linkMatches(l) {
+  const q = (S.navQ || '').trim().toLowerCase();
+  if (!q) return true;
+  if ([l.label, l.note, ...(l.tags || []), (l.meta && l.meta.colour) || '']
+    .filter(Boolean).join(' ').toLowerCase().includes(q)) return true;
+  return [l.a, l.b].some(ref => {
+    const n = nodeById(Core.splitRef(ref)[0]);
+    return n ? nodeMatches(n) : false;
+  });
+}
+
+// Shown at the top of a filtered view, because a view quietly showing a subset
+// is how you conclude something is missing when it is only hidden.
+function filterNote(v, kept, total, what) {
+  if (!filtering()) return;
+  v.append(el('div', { class: 'filternote' },
+    `filtered to "${S.navQ}": ${kept} of ${total} ${what}. `,
+    el('button', { onclick: () => { S.navQ = ''; render(); } }, 'clear filter')));
+}
+
 function renderNav(ix) {
   const nav = $('nav'); nav.replaceChildren();
 
+  // one datalist for every tag editor on the page, so the vocabulary converges
+  // rather than each thing growing its own spelling
+  let dl = document.getElementById('alltags');
+  if (!dl) { dl = el('datalist', { id: 'alltags' }); document.body.append(dl); }
+  dl.replaceChildren(...allTags().map(t => el('option', { value: t })));
+
   const q = (S.navQ || '').toLowerCase();
   const find = el('input', {
-    placeholder: 'filter…  (ctrl+k)', value: S.navQ || '',
+    placeholder: 'filter by name, type or tag…  (ctrl+k)', value: S.navQ || '',
     style: 'width:calc(100% - 20px);margin:0 10px 6px',
   });
   find.oninput = () => {
@@ -1554,14 +1597,7 @@ function renderNav(ix) {
   nav.append(find);
   // matches id, label, hostname, or any ip, so pasting an address from a DHCP
   // lease finds the port that owns it
-  const hit = n => {
-    if (!q) return true;
-    if ((n.id + ' ' + (n.label || '') + ' ' + (n.hostname || '')).toLowerCase().includes(q)) return true;
-    return n.pluggables.some(p =>
-      (p.ips || []).some(a => a.toLowerCase().includes(q)) ||
-      (p.mac || '').toLowerCase().includes(q) ||
-      p.id.toLowerCase().includes(q));
-  };
+  const hit = nodeMatches;
 
   // `tally` goes in through here rather than being fished back out with
   // querySelector: re-finding an element you just built is fragile, and it
@@ -1653,7 +1689,9 @@ function renderView(ix, probs) {
       el('a', {
         href: '#', onclick: e => { e.preventDefault(); doOpen(); },
       }, 'Open an inventory.yaml'),
-      ', add a node in the sidebar to start a new one, or look at ',
+      ', ',
+      el('a', { href: '#', onclick: e => { e.preventDefault(); loadDemo(); } }, 'load the demo'),
+      ' to see it with data in, add a node in the sidebar to start your own, or look at ',
       el('a', {
         href: '#view/settings',
         onclick: e => { e.preventDefault(); S.sel = { kind: 'view', id: 'settings' }; render(); },
@@ -1743,8 +1781,23 @@ function field(label, input, help) {
 // Text by default. rawHint is for the handful of literal constants that want
 // <b> and <code>; keeping them separate means no future edit can accidentally
 // pipe a node label into innerHTML while the app holds a file write handle.
-const hint = text => el('div', { class: 'hint' }, text);
-const rawHint = html => el('div', { class: 'hint', html });
+// A long hint collapses to one line. These grew, view by view, until the help
+// above the graph took a third of the window and pushed the diagram itself into
+// the bottom half. Short ones stay inline, because a one-line note that is
+// already one line gains nothing from a disclosure triangle.
+const LONG_HINT = 150;
+function hintBox(node, len) {
+  if (len <= LONG_HINT) {
+    const d = el('div', { class: 'hint' });
+    d.append(node);
+    return d;
+  }
+  const box = el('details', { class: 'hint' });
+  box.append(el('summary', {}, 'how this view works'), node);
+  return box;
+}
+const hint = text => hintBox(el('div', {}, text), String(text).length);
+const rawHint = html => hintBox(el('div', { html }), String(html).replace(/<[^>]*>/g, '').length);
 
 function renderNode(v, ix, n) {
   if (!n) { v.append(el('div', { class: 'empty' }, 'Gone.')); return; }
@@ -1781,10 +1834,15 @@ function renderNode(v, ix, n) {
       'How cables refer to this thing, so renaming it here rewrites every reference. '
       + 'Lowercase, and / to namespace, as in power/ups-1.'),
     field('label', bind(n, 'label'),
-      'The human name, shown everywhere in place of the id. Change it freely; nothing points at it.'),
+      'The human name, shown everywhere in place of the id. Keep it short: it is a heading, not a sentence.'),
+    field('sublabel', bind(n, 'sublabel'),
+      'What this one IS, on a second line under the label: "gateway", "upper", "k3s worker". '
+      + 'Two boxes both reading "Orange Pi" tell you nothing, and putting the purpose in the label '
+      + 'just makes it truncate.'),
     field('type', typeInput(n),
-      'What kind of thing this is. It only groups the sidebar and picks the icon in reports, '
-      + 'so pick the nearest and move on. Use location for a room, rack or shelf.'),
+      'What kind of thing this is. Free text, and searchable: typing "switch" in the filter lists every '
+      + 'switch. One value is load bearing, <b>location</b>: it makes this a place, which the tree nests '
+      + 'under, the graph groups by and draws a boundary around. Otherwise pick the nearest word and move on.'),
     field('virtual', virtualToggle(n),
       'A VM or container: it nests under the host it runs on so you can see what dies with that host, '
       + 'but it is left out of the free-port report and the graph, because it has no sockets to plug into.'),
@@ -1795,6 +1853,10 @@ function renderNode(v, ix, n) {
       const p = nodeById(id); return p ? `${p.label || p.id} (${id})` : '(none)';
     }), 'What physically contains this: the room for a device, the server for a drive. '
       + 'This is containment, not cabling.'),
+    field('tags', tagEditor(n),
+      'Free grouping that cuts across type: battery-backed, to-replace, borrowed. '
+      + 'Type one and press enter. The filter box matches tags, so they are how you select '
+      + 'a set of things that have nothing else in common.'),
     field('note', bind(n, 'note'),
       'Free text for whatever does not fit a field. Anything you want to search for later is better as meta.'),
   ));
@@ -2273,6 +2335,7 @@ function renderFree(v, ix) {
   let nfree = 0, nblocked = 0;
   for (const n of S.inv.nodes) {
     if (n.virtual) continue;   // a vNIC is not a socket a cable can go into
+    if (!nodeMatches(n)) continue;
     const byKind = new Map();
     for (const p of n.pluggables) {
       const ref = n.id + ':' + p.id;
@@ -2323,6 +2386,57 @@ function renderFree(v, ix) {
 // One cable editor, used by the Cables table and by the panel the graph opens.
 // Two copies would drift, and the copy you were looking at would be the one
 // missing the field you wanted.
+// A cable colour is free text: "blue", "#3366ff", "grey with a red boot". Only
+// use it to paint with if the browser can actually parse it, otherwise fall back
+// to the colour for the port type rather than drawing an invisible line.
+// One tag editor for everything that carries tags. Existing tags anywhere in
+// the file are offered, so the vocabulary converges instead of every thing
+// getting its own spelling.
+function tagEditor(obj) {
+  const wrap = el('span', { class: 'tags' });
+  const paint = () => {
+    wrap.replaceChildren();
+    for (const t of (obj.tags || [])) {
+      wrap.append(el('span', { class: 'tag' }, t,
+        el('button', {
+          title: 'remove this tag',
+          onclick: () => { obj.tags = obj.tags.filter(x => x !== t); touched(); },
+        }, '×')));
+    }
+    const add = el('input', { placeholder: '+ tag', style: 'width:90px', list: 'alltags' });
+    add.onchange = () => {
+      const t = add.value.trim().toLowerCase();
+      add.value = '';
+      if (!t) return;
+      const set = new Set([...(obj.tags || []), t]);
+      obj.tags = [...set].sort();
+      touched();
+    };
+    add.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); add.onchange(); } };
+    wrap.append(add);
+  };
+  paint();
+  return wrap;
+}
+
+// every tag in the file, for the datalist and the filter chips
+function allTags() {
+  const out = new Set();
+  const eat = x => { for (const t of (x.tags || [])) out.add(t); };
+  S.inv.nodes.forEach(eat); S.inv.links.forEach(eat); (S.inv.vlans || []).forEach(eat);
+  return [...out].sort();
+}
+
+function cssColour(v) {
+  const want = String(v || '').trim();
+  if (!want) return '';
+  const probe = el('span', {});
+  probe.style.color = '';
+  probe.style.color = want;
+  return probe.style.color ? want : '';
+}
+const cableColour = l => cssColour(l.meta && l.meta.colour);
+
 function cableEditor(l) {
   const box = el('div', {});
   const flag = (key, label, help) => {
@@ -2342,6 +2456,7 @@ function cableEditor(l) {
     field('blocks', el('button', { onclick: () => blocksEditor(l) }, `${l.blocks.length} socket(s)`),
       'Sockets this connection makes unusable, typically a brick overhanging its neighbour.'),
     field('note', inline(l, 'note', 300), 'Anything else about this cable.'),
+    field('tags', tagEditor(l), 'Same tags as everything else: patch, temporary, to-replace.'),
   ));
   box.append(el('div', { class: 'faint', style: 'margin:10px 0 4px' }, 'cable meta'));
   box.append(rawHint('Facts about the cable itself, not about either end. <b>carries</b> is the one to reach for '
@@ -2349,6 +2464,35 @@ function cableEditor(l) {
     + 'buckets it accordingly instead of filing a charger next to HDMI.'));
   box.append(metaEditor(l, 'link'));
   return box;
+}
+
+// The colour cell: a swatch of whatever was typed, so a value the browser cannot
+// parse is visibly not a colour rather than silently ignored.
+function colourCell(l) {
+  const inp = el('input', {
+    value: (l.meta && l.meta.colour) || '', placeholder: 'blue, #3366ff…', style: 'width:110px',
+  });
+  const dot = el('span', {
+    style: 'display:inline-block;width:11px;height:11px;border-radius:3px;'
+      + 'border:1px solid var(--line);vertical-align:middle;margin-right:5px',
+  });
+  const paint = () => {
+    const c = cssColour(inp.value);
+    dot.style.background = c || 'transparent';
+    dot.title = inp.value.trim()
+      ? (c ? 'drawn in this colour' : 'not a colour the browser knows, so the graph uses the port type')
+      : 'no colour recorded';
+  };
+  inp.onchange = () => {
+    const val = inp.value.trim();
+    const meta = { ...(l.meta || {}) };
+    if (val) meta.colour = val; else delete meta.colour;
+    l.meta = Object.keys(meta).length ? meta : null;
+    touched();
+  };
+  inp.oninput = paint;
+  paint();
+  return el('span', { style: 'display:inline-flex;align-items:center' }, dot, inp);
 }
 
 function renderCables(v, ix) {
@@ -2360,7 +2504,10 @@ function renderCables(v, ix) {
     'so both ends still count as free. <b>blocks</b> lists sockets this connection makes unusable, typically a brick ' +
     'overhanging its neighbour.'));
   if (!S.inv.links.length) { v.append(el('div', { class: 'empty' }, 'None yet.')); return; }
-  const rows = S.inv.links
+  const inScope = S.inv.links.filter(linkMatches);
+  filterNote(v, inScope.length, S.inv.links.length, 'cables');
+  if (!inScope.length) { v.append(el('div', { class: 'empty' }, 'None match this filter.')); return; }
+  const rows = inScope
     .slice()
     .sort((x, y) => (x.a < y.a ? -1 : x.a > y.a ? 1 : 0))
     .map(l => {
@@ -2384,6 +2531,7 @@ function renderCables(v, ix) {
       const main = el('tr', { style: l.planned ? 'opacity:.72' : '' },
         el('td', {}, l.a), el('td', {}, l.b),
         el('td', {}, inline(l, 'label', 110)),
+        el('td', {}, colourCell(l)),
         el('td', {}, poe),
         el('td', {}, planned),
         el('td', {}, el('button', { onclick: () => blocksEditor(l) }, `blocks (${l.blocks.length})`)),
@@ -2399,12 +2547,12 @@ function renderCables(v, ix) {
         }, '×')),
       );
       if (!open) return [main];
-      return [main, el('tr', {}, el('td', { colspan: 9, style: 'padding:8px 0 14px 12px' },
+      return [main, el('tr', {}, el('td', { colspan: 10, style: 'padding:8px 0 14px 12px' },
         cableEditor(l)))];
     }).flat();
   v.append(el('table', {},
     el('thead', {}, el('tr', {},
-      ...['a', 'b', 'label', 'poe', 'planned', 'blocks', 'note', 'detail', ''].map(h => el('th', {}, h)))),
+      ...['a', 'b', 'label', 'colour', 'poe', 'planned', 'blocks', 'note', 'detail', ''].map(h => el('th', {}, h)))),
     el('tbody', {}, ...rows)));
 }
 
@@ -2454,12 +2602,99 @@ function renderYaml(v) {
   let text;
   try { text = currentYaml(); }
   catch (e) { v.append(el('div', { class: 'prob e' }, String(e.message || e))); return; }
-  v.append(el('div', { style: 'margin:8px 0' },
-    el('button', { onclick: () => copyText(text, 'copied', 'Copy this YAML') }, 'copy')));
-  v.append(el('pre', { style: 'white-space:pre-wrap;background:var(--panel);padding:10px;border:1px solid var(--line);border-radius:6px' }, text));
+
+  v.append(rawHint(
+    'Editable. Some things are quicker to type than to click: renaming ten ports, pasting a block from '
+    + 'another file, fixing an indent. <b>Apply</b> parses what is here and replaces the whole document, '
+    + 'and refuses if it does not parse or uses a key this does not know, so a typo cannot silently delete '
+    + 'anything. Ctrl+Z undoes an apply like any other edit. What you see is normalised: comments and your '
+    + 'key order are not preserved, because the file has one canonical form and the CLI writes the same '
+    + 'bytes.'));
+
+  const ta = el('textarea', {
+    spellcheck: 'false',
+    style: 'width:100%;min-height:52vh;font:inherit;background:var(--panel);'
+      + 'border:1px solid var(--line);border-radius:6px;padding:10px;white-space:pre',
+  });
+  ta.value = text;
+  const problem = el('div', { class: 'prob e', style: 'display:none;margin-top:8px' });
+
+  const apply = () => {
+    let next;
+    try {
+      next = Core.parse(ta.value, S.name);
+    } catch (e) {
+      // The document is untouched: a refused parse must not half-apply.
+      problem.textContent = String(e.message || e);
+      problem.style.display = '';
+      return;
+    }
+    problem.style.display = 'none';
+    if (Core.serialize(next) === text) { toast('no change'); return; }
+    S.inv = next;
+    touched();
+    toast('applied');
+  };
+
+  const bar = el('div', { style: 'display:flex;gap:6px;margin:8px 0;align-items:center;flex-wrap:wrap' });
+  bar.append(
+    el('button', { class: 'btn-primary', onclick: apply }, 'Apply'),
+    el('button', { onclick: () => { ta.value = text; problem.style.display = 'none'; } }, 'revert'),
+    el('button', { onclick: () => copyText(ta.value, 'copied', 'Copy this YAML') }, 'copy'),
+    el('span', { class: 'faint' }, `${text.split('\n').length} lines`));
+  v.append(bar, ta, problem);
 }
 
 /* ---- vlans -------------------------------------------------------------- */
+// One row per prefix: dual stack means at least two, and a ULA and a GUA
+// alongside the v4 range makes four ordinary.
+//
+// The empty row is DOM only and never enters the model. Pushing '' into subnets
+// made the document unsaveable: the parser drops empty entries on read-back, so
+// the fingerprint of what was written no longer matched the model and Save
+// refused. A placeholder must not be data.
+function subnetsCell(vl) {
+  const box = el('div', {});
+  let pending = false;
+  const paint = () => {
+    box.replaceChildren();
+    for (const [i, sn] of (vl.subnets || []).entries()) {
+      const inp = el('input', { value: sn, style: 'width:190px' });
+      inp.onchange = () => {
+        const next = inp.value.trim();
+        if (next) vl.subnets[i] = next;
+        else vl.subnets.splice(i, 1);
+        touched();
+      };
+      box.append(el('div', { style: 'display:flex;gap:4px;margin-bottom:3px' }, inp,
+        el('button', {
+          title: 'remove this prefix',
+          onclick: () => { vl.subnets.splice(i, 1); touched(); },
+        }, '×')));
+    }
+    if (pending) {
+      const inp = el('input', { placeholder: '10.0.10.0/24 or fd00::/64', style: 'width:190px' });
+      inp.onchange = () => {
+        // idempotent: a browser can fire change more than once for one commit,
+        // and appending twice is a duplicate prefix the user never typed
+        if (!pending) return;
+        pending = false;
+        const next = inp.value.trim();
+        if (!next) { paint(); return; }
+        vl.subnets = [...(vl.subnets || []), next];
+        touched();
+      };
+      inp.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); inp.onchange(); } };
+      box.append(el('div', { style: 'display:flex;gap:4px;margin-bottom:3px' }, inp,
+        el('button', { onclick: () => { pending = false; paint(); } }, '×')));
+      queueMicrotask(() => inp.focus());
+    }
+    box.append(el('button', { onclick: () => { pending = true; paint(); } }, '+ prefix'));
+  };
+  paint();
+  return box;
+}
+
 function renderVlans(v) {
   v.append(el('h2', {}, 'VLANs'));
   v.append(rawHint(
@@ -2507,31 +2742,7 @@ function renderVlans(v) {
       const main = el('tr', {},
         el('td', {}, idIn),
         el('td', {}, inline(vl, 'name', 110)),
-        el('td', {}, (() => {
-          // one row per prefix: dual stack means at least two, and a ULA and a
-          // GUA alongside the v4 range means four is ordinary
-          const box = el('div', {});
-          const paint = () => {
-            box.replaceChildren();
-            const list = vl.subnets || [];
-            for (const [i, sn] of list.entries()) {
-              const inp = el('input', { value: sn, style: 'width:190px' });
-              inp.onchange = () => {
-                const next = inp.value.trim();
-                if (next) vl.subnets[i] = next;
-                else vl.subnets.splice(i, 1);
-                touched();
-              };
-              box.append(el('div', { style: 'display:flex;gap:4px;margin-bottom:3px' }, inp,
-                el('button', { title: 'remove this prefix', onclick: () => { vl.subnets.splice(i, 1); touched(); } }, '×')));
-            }
-            box.append(el('button', {
-              onclick: () => { vl.subnets = [...(vl.subnets || []), '']; paint(); },
-            }, '+ prefix'));
-          };
-          paint();
-          return box;
-        })()),
+        el('td', {}, subnetsCell(vl)),
         el('td', {}, inline(vl, 'note', 170)),
         el('td', { class: 'faint' }, users.length ? `${users.length} port${users.length > 1 ? 's' : ''}` : 'unused'),
         el('td', {},
@@ -2692,8 +2903,21 @@ function renderTree(v, ix) {
     'to the top level. A drop that would make something its own ancestor is refused. ' +
     'Clicking a node opens it for editing in a dialog, so you never lose your place in the tree.'));
 
+  // A match on its own is unreadable out of context, so the ancestors of a match
+  // are kept too rather than hoisting matches to the root.
+  const keep = new Set();
+  if (filtering()) {
+    for (const n of S.inv.nodes) {
+      if (!nodeMatches(n)) continue;
+      let cur = n, guard = 0;
+      while (cur && guard++ < 200) { keep.add(cur.id); cur = ix.nodeById.get(cur.parent); }
+    }
+  }
+  const inScope = n => !filtering() || keep.has(n.id);
+
   const kids = new Map();
   for (const n of S.inv.nodes) {
+    if (!inScope(n)) continue;
     const k = ix.nodeById.has(n.parent) ? n.parent : '';
     if (!kids.has(k)) kids.set(k, []);
     kids.get(k).push(n);
@@ -2752,8 +2976,17 @@ function renderTree(v, ix) {
         title: 'open this node; the tree stays behind the dialog',
         onclick: e => { e.preventDefault(); S.sel = { kind: 'node', id: n.id }; render(); },
       }, n.label || n.id));
-      if (n.type) row.append(el('span', { class: 'chip' }, n.type));
+      if (n.type) row.append(el('span', {
+        class: 'chip', style: 'cursor:pointer', title: 'filter to everything of this type',
+        onclick: e => { e.stopPropagation(); S.navQ = n.type; render(); },
+      }, n.type));
       if (n.virtual) row.append(el('span', { class: 'chip', title: 'no physical presence' }, 'virtual'));
+      for (const t of (n.tags || [])) {
+        row.append(el('span', {
+          class: 'chip tag', style: 'cursor:pointer', title: 'filter to everything tagged ' + t,
+          onclick: e => { e.stopPropagation(); S.navQ = t; render(); },
+        }, t));
+      }
       const bits = summarise(n);
       if (bits.length) row.append(el('span', { class: 'faint' }, bits.join(' · ')));
 
@@ -2813,6 +3046,7 @@ function renderTree(v, ix) {
   };
   walk('', 0);
   v.append(box);
+  filterNote(v, shown, S.inv.nodes.length, 'nodes');
 
   // Dropping onto a row nests; there has to be somewhere to drop to un-nest.
   const root = el('div', { class: 'droproot' }, 'drop here to move to the top level');
@@ -2839,7 +3073,9 @@ function renderTree(v, ix) {
       mark(n.id);
     }
   })('');
-  const stranded = S.inv.nodes.filter(n => !reachable.has(n));
+  // scope first: with a filter on, everything out of scope is missing from the
+  // child map and would otherwise all land here as "unreachable"
+  const stranded = S.inv.nodes.filter(n => inScope(n) && !reachable.has(n));
   if (stranded.length) {
     // A parent loop used to make these vanish, with nothing but the "n of m
     // shown" line to suggest anything was missing.
@@ -2910,6 +3146,10 @@ function renderGraph(v, ix) {
   for (const k of ['eth', 'power', 'usb', 'hdmi']) {
     bar.append(el('span', { class: 'chip', style: 'color:' + WIRE[k] + ';border-color:' + WIRE[k] + '55' }, k));
   }
+  if (S.inv.links.some(l => cableColour(l))) {
+    bar.append(el('span', { class: 'faint', title: 'a cable with a colour recorded is drawn in it' },
+      '· real colours where recorded'));
+  }
 
   // which location does a node live in
   const locOf = n => {
@@ -2966,7 +3206,14 @@ function renderGraph(v, ix) {
     return out;
   };
   const wanted = l => S.gfilter === 'all' || bucketsOf(l).has(S.gfilter);
-  const links = S.inv.links.filter(l => ix.portByRef.has(l.a) && ix.portByRef.has(l.b) && wanted(l));
+  // Both filters apply: the connection-type buttons above, and the text filter
+  // in the sidebar, which selects by name, type or tag.
+  const endsInScope = l => [l.a, l.b].every(ref => {
+    const n = nodeById(Core.splitRef(ref)[0]);
+    return n ? nodeMatches(n) : false;
+  });
+  const links = S.inv.links.filter(l =>
+    ix.portByRef.has(l.a) && ix.portByRef.has(l.b) && wanted(l) && endsInScope(l));
   const live = new Set(links.flatMap(l => [l.a, l.b]));
 
   // Containment, drawn as containment. This used to be one flat stack per
@@ -2998,7 +3245,8 @@ function renderGraph(v, ix) {
     const shown = n.pluggables.filter(p => live.has(n.id + ':' + p.id));
     // a virtual guest has no sockets, so it gets a header and nothing else
     const rows = n.virtual ? shown.length : Math.max(shown.length, 1);
-    const headH = HEAD_H + rows * ROW_H + 8;
+    const hdr = HEAD_H + (n.sublabel ? 11 : 0);   // room for the second line
+    const headH = hdr + rows * ROW_H + 8;
     let cy = y + headH;
     const kids = kidsOf.get(n.id) || [];
     for (const k of kids) {
@@ -3006,7 +3254,7 @@ function renderGraph(v, ix) {
       cy += layout(k, x + KID_INSET, cy, w - KID_INSET * 2, depth + 1);
     }
     const h = (cy - y) + (kids.length ? KID_GAP : 0);
-    place.set(n.id, { n, x, y, w, h, headH, shown, depth });
+    place.set(n.id, { n, x, y, w, h, headH, hdr, shown, depth });
     laying.delete(n.id);
     return h;
   };
@@ -3033,13 +3281,14 @@ function renderGraph(v, ix) {
   let colTitles;
   if (S.glayout === 'place') {
     columns = colIds.map(cid => S.inv.nodes.filter(n =>
-      n.type !== 'location' && locOf(n) === cid && !isNodeParent(n)));
+      n.type !== 'location' && locOf(n) === cid && !isNodeParent(n) && nodeMatches(n)));
     colTitles = colIds.map(cid => {
       const loc = ix.nodeById.get(cid);
       return (loc ? (loc.label || loc.id) : 'no location').toUpperCase();
     });
   } else {
-    const roots = S.inv.nodes.filter(n => n.type !== 'location' && !isNodeParent(n));
+    const roots = S.inv.nodes.filter(n =>
+      n.type !== 'location' && !isNodeParent(n) && nodeMatches(n));
     const idx = new Map(roots.map((n, i) => [n.id, i]));
     // Only a cable with a declared direction can order two things. An ethernet
     // run between two switches says nothing about which comes first, so it is
@@ -3117,7 +3366,8 @@ function renderGraph(v, ix) {
 
   // A parent loop leaves every node in it without a root, so nothing would be
   // laid out and they would silently disappear. Same failure the tree had.
-  const orphans = S.inv.nodes.filter(n => n.type !== 'location' && !place.has(n.id));
+  const orphans = S.inv.nodes.filter(n =>
+    n.type !== 'location' && !place.has(n.id) && nodeMatches(n));
   if (orphans.length) {
     let y = maxY + PAD_Y;
     for (const n of orphans) y += layout(n, 12, y, BOX_W, 0) + PAD_Y;
@@ -3139,7 +3389,7 @@ function renderGraph(v, ix) {
   // the whole chain it belongs to, so "what feeds the AP" is one click.
   const chain = S.gpick
     ? neighbourhood(links, S.gpick, ix)
-    : tracedChain(links, S.gtrace, ix);
+    : tracedChain(links, S.gtrace, ix, bucketsOf);
   const traced = chain.links;
   const litRefs = chain.refs;
   const litNodes = chain.nodes;
@@ -3156,7 +3406,9 @@ function renderGraph(v, ix) {
       ' ' + (to - dx * dir) + ',' + B.y + ' ' + to + ',' + B.y;
     const on = traced.has(l);
     const dim = traced.size > 0 && !on;
-    const wire = WIRE[t] || '#7f8794';
+    // the actual colour of the actual cable, when you have bothered to record
+    // it: that is the thing you are looking for behind the desk
+    const wire = cableColour(l) || WIRE[t] || '#7f8794';
     const line = svgEl('g', { style: 'cursor:pointer' });
     // a fat transparent line under the thin one, so a 1.4px cable is clickable
     line.append(svgEl('path', {
@@ -3269,13 +3521,22 @@ function renderGraph(v, ix) {
       'stroke-dasharray': n.virtual ? '4 3' : null,
       opacity: dimmed ? '0.35' : '1',
     }));
+    const freeCount0 = n.pluggables.filter(pp => Core.slotsLeft(ix, n.id, pp) > 0).length;
+    const corner0 = n.virtual ? 'guest' : (freeCount0 > 0 ? freeCount0 + ' free' : '');
+    const nameW = Math.max(6, Math.floor((w - 22) / 7) - (corner0 ? corner0.length + 1 : 0));
     box.append(svgEl('text', {
       x: x + 9, y: y + 16, fill: n.virtual ? '#9aa3b2' : '#e4e7ec',
       'font-size': depth ? '11' : '12', 'font-family': GFONT,
-    }, trunc(n.label || n.id, Math.max(10, 24 - depth * 3))));
+    }, trunc(n.label || n.id, nameW)));
+    box.append(svgEl('title', {},
+      (n.label || n.id) + (n.sublabel ? '  ·  ' + n.sublabel : '') + '\n' + n.id));
+    if (n.sublabel) {
+      box.append(svgEl('text', {
+        x: x + 9, y: y + 27, fill: '#8b95a5', 'font-size': '10', 'font-family': GFONT,
+      }, trunc(n.sublabel, Math.floor((w - 18) / 6))));
+    }
     // the right-hand corner shows what is still free, or that this is a guest
-    const freeCount = n.pluggables.filter(pp => Core.slotsLeft(ix, n.id, pp) > 0).length;
-    const corner = n.virtual ? 'guest' : (freeCount > 0 ? freeCount + ' free' : '');
+    const corner = corner0;
     if (corner) {
       box.append(svgEl('text', {
         x: x + w - 9, y: y + 16, fill: n.virtual ? '#7f8794' : '#5dd39e', 'font-size': '10',
@@ -3283,7 +3544,7 @@ function renderGraph(v, ix) {
       }, corner));
     }
     shown.forEach((p, i) => {
-      const py = y + HEAD_H + i * ROW_H + 8;
+      const py = y + (b.hdr || HEAD_H) + i * ROW_H + 8;
       // the exact sockets the traced chain passes through, so you can see where
       // it lands rather than only which boxes are involved
       const lit = litRefs.has(n.id + ':' + p.id);
@@ -3465,8 +3726,9 @@ function renderGraph(v, ix) {
   v.append(bar);
   v.append(root);
   const foot = el('div', { class: 'faint', style: 'margin-top:6px' },
-    place.size + ' nodes, ' + links.length + ' cables shown' +
-    (S.gfilter === 'all' ? '' : ' (filtered to ' + S.gfilter + ')'));
+    place.size + ' nodes, ' + links.length + ' cables shown'
+    + (S.gfilter === 'all' ? '' : ' · type: ' + S.gfilter)
+    + (filtering() ? ' · matching "' + S.navQ + '"' : ''));
   if (S.gconnect) {
     foot.replaceChildren(
       el('b', {}, 'connecting from ' + S.gconnect), ' ',
@@ -3497,7 +3759,7 @@ function renderGraph(v, ix) {
 // the fed end only further downstream, so the other devices sharing a socket are
 // left out. A cable with no declared direction, ethernet between two switches
 // say, highlights itself and its two boxes and stops.
-function tracedChain(links, sel, ix) {
+function tracedChain(links, sel, ix, kindOf) {
   const empty = { links: new Set(), refs: new Set(), nodes: new Set() };
   if (!sel) return empty;
   const seed = links.find(l => l.a === sel.a && l.b === sel.b);
@@ -3515,6 +3777,18 @@ function tracedChain(links, sel, ix) {
   const nodes = new Set();
   const dirOf = ref => { const p = ix.portByRef.get(ref); return p ? p.port.dir : ''; };
 
+  // Stay within the kind of thing you clicked. Upstream is otherwise
+  // type-agnostic, so tracing a DVI adapter walked up into the GPU, the
+  // motherboard and then the machine's mains feed, lighting the whole power
+  // chain of a video cable. A PSU brick chain still traces end to end, because
+  // both of its sides are power.
+  const seedKinds = kindOf ? kindOf(seed) : null;
+  const sameKind = l => {
+    if (!seedKinds) return true;
+    for (const k of kindOf(l)) if (seedKinds.has(k)) return true;
+    return false;
+  };
+
   // want 'in': keep walking towards the source. want 'out': keep walking away.
   const walk = (startNode, want) => {
     const seen = new Set();
@@ -3528,6 +3802,7 @@ function tracedChain(links, sel, ix) {
       for (const l of (onNode.get(nid) || [])) {
         const mine = Core.splitRef(l.a)[0] === nid ? l.a : l.b;
         if (dirOf(mine) !== want) continue;
+        if (!sameKind(l)) continue;
         outLinks.add(l);
         queue.push(Core.splitRef(mine === l.a ? l.b : l.a)[0]);
       }
@@ -3573,7 +3848,9 @@ function anchorOf(place, ref) {
   if (!b) return null;
   const i = b.shown.findIndex(p => p.id === parts[1]);
   if (i < 0) return null;
-  const y = b.y + HEAD_H + i * ROW_H + 8;
+  // b.hdr, not the constant: a box with a sublabel has a taller header, and
+  // using the constant would draw every cable through the wrong row.
+  const y = b.y + (b.hdr || HEAD_H) + i * ROW_H + 8;
   // b.w, not BOX_W: a nested box is narrower than its parent, and using the
   // constant put the right-hand anchor outside the box it belongs to.
   return { x: b.x, y, left: b.x + 5, right: b.x + b.w - 5 };
@@ -3630,8 +3907,97 @@ function exportPng(root, width, height) {
   img.src = src;
 }
 
+// Load from a URL, so an inventory can live somewhere fetchable and the editor
+// be pointed at it, rather than every reader needing a copy of the file.
+//
+// What you get is a READ of that URL: there is no handle behind it, so Save
+// downloads rather than writing back. Nothing here can PUT to a web server, and
+// pretending otherwise would be worse than saying so.
+async function loadFromUrl(u, quiet) {
+  let res;
+  try {
+    res = await fetch(u, { cache: 'no-store' });
+  } catch (e) {
+    // Nearly always CORS or a bad host, and the browser deliberately does not
+    // say which. Guessing is more useful than repeating "failed to fetch".
+    if (!quiet) {
+      alertDlg('Could not fetch that URL',
+        String(e.message || e) + '. Usually this is CORS: the server has to send '
+        + 'Access-Control-Allow-Origin for a page on another origin to read it. '
+        + 'A raw file on a code host normally does; a plain file server normally does not.');
+    }
+    return false;
+  }
+  if (!res.ok) {
+    if (!quiet) alertDlg('Could not fetch that URL', `${res.status} ${res.statusText}`);
+    return false;
+  }
+  const text = await res.text();
+  const name = (u.split('?')[0].split('/').pop() || 'inventory.yaml');
+  if (!ingest(text, name)) return false;
+  S.handle = null;                 // a fetched copy is not a file we can write
+  S.sourceUrl = u;
+  render();
+  toast('loaded from ' + u);
+  return true;
+}
+
+// The worked example, so there is something to look at without owning any
+// hardware yet. Relative first, which works wherever this is hosted and needs no
+// network; the raw URL is the fallback for opening index.html straight off disk.
+const DEMO_RAW = 'https://raw.githubusercontent.com/nova-orion/wirebook/main/inventory.demo.yaml';
+async function loadDemo() {
+  if (await loadFromUrl('inventory.demo.yaml', true)) return;
+  if (await loadFromUrl(DEMO_RAW, true)) return;
+  alertDlg('Could not load the demo',
+    'Tried inventory.demo.yaml beside this page and then the copy on GitHub, and neither could '
+    + 'be fetched. Opening this page from a file:// URL blocks the first, and the second needs '
+    + 'the network.');
+}
+
+function urlDialog() {
+  $('dlgHead').textContent = 'Load from a URL';
+  const inp = el('input', {
+    value: S.sourceUrl || '', placeholder: 'https://example.com/inventory.yaml',
+    style: 'width:100%',
+  });
+  $('dlgBody').replaceChildren(
+    el('div', { class: 'hint' },
+      'Fetches and opens it read-only: there is no file handle behind a URL, so Save will '
+      + 'download a copy rather than writing back. Add <code>?url=</code> to this page\'s address '
+      + 'to have it load automatically, which makes a shareable bookmark.'),
+    inp,
+    el('div', { style: 'margin-top:8px' },
+      el('button', { onclick: () => { closeDlg(); loadDemo(); } }, 'load the demo inventory instead')));
+  const go = async () => {
+    const u = inp.value.trim();
+    if (!u) return;
+    closeDlg();
+    if (await loadFromUrl(u)) {
+      // keep it in the address bar so a reload does the same thing again
+      const url = new URL(location.href);
+      url.searchParams.set('url', u);
+      try { history.replaceState(history.state, '', url.toString()); } catch { /* ignore */ }
+    }
+  };
+  inp.onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); go(); } };
+  $('dlgFoot').replaceChildren(
+    el('button', { class: 'btn-primary', onclick: go }, 'Load'),
+    el('button', { onclick: closeDlg }, 'Cancel'));
+  openDlg();
+  inp.focus(); inp.select();
+}
+
 /* ---- boot --------------------------------------------------------------- */
 $('bOpen').onclick = doOpen;
+$('bUrl').onclick = urlDialog;
+
+// ?url=... loads on open, which makes a shareable bookmark. Only from an
+// explicit parameter, and the address stays visible in the header afterwards.
+{
+  const want = new URLSearchParams(location.search).get('url');
+  if (want) queueMicrotask(() => loadFromUrl(want));
+}
 $('bSave').onclick = doSave;
 $('bUndo').onclick = doUndo;
 $('bLink').onclick = () => {
@@ -3658,7 +4024,15 @@ window.addEventListener('keydown', e => {
   const mod = e.ctrlKey || e.metaKey;
   if (!mod) return;
   const k = e.key.toLowerCase();
+
+  // While the caret is in a text box, undo means undo the TYPING. Swallowing it
+  // there rolled the whole document back mid-edit, which looks like the app
+  // throwing your work away. Ctrl+S is still ours: nothing else claims it.
+  const t = document.activeElement;
+  const typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+
   if (k === 's') { e.preventDefault(); quickSave(); }
+  else if (typing && (k === 'z' || k === 'y')) { /* leave it to the text box */ }
   else if (k === 'z' && !e.shiftKey) { e.preventDefault(); doUndo(); }
   else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); doRedo(); }
   else if (k === 'k') {

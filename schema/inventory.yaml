@@ -136,6 +136,13 @@ $defs:
     properties:
       id: {type: integer, minimum: 0, maximum: 4094}
       name: {type: string, description: "Short name, e.g. mgmt or iot"}
+      tags:
+        type: array
+        items: {type: string, pattern: "^[a-z0-9][a-z0-9 ._/-]*$"}
+        description: >-
+          Free grouping that cuts across `type`: battery-backed, to-replace,
+          borrowed. Lowercased, deduped and sorted on save. Use `type` for what a
+          thing IS and a tag for anything else you want to select on.
       subnet:
         type: string
         description: >-
@@ -285,6 +292,18 @@ $defs:
       label:
         type: string
         description: Human name, or whatever is physically written on it.
+      sublabel:
+        type: string
+        description: >-
+          What this one IS, shown on a second line under the label: "gateway",
+          "upper", "k3s worker". Keeps the label short so it stops truncating.
+      tags:
+        type: array
+        items: {type: string}
+        description: >-
+          Free grouping that cuts across `type`: battery-backed, to-replace,
+          borrowed. Lowercased, deduped and sorted on save. Use `type` for what a
+          thing IS and a tag for anything else you want to select on.
       virtual:
         type: boolean
         description: |
@@ -427,6 +446,13 @@ $defs:
       label:
         type: string
         description: Cable tag. Put cable identity here, not on both ports.
+      tags:
+        type: array
+        items: {type: string}
+        description: >-
+          Free grouping that cuts across `type`: battery-backed, to-replace,
+          borrowed. Lowercased, deduped and sorted on save. Use `type` for what a
+          thing IS and a tag for anything else you want to select on.
       note:
         type: string
       planned:

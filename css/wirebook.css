@@ -172,6 +172,16 @@ td.right { text-align: right; }
 .chip.eth { color: #8fc7ff; } .chip.power { color: #f0c674; }
 .chip.usb { color: #b8a2e3; } .chip.free { color: var(--ok); }
 .chip.blocked { color: var(--err); }
+/* tags read as a distinct kind of chip from `type`, which is a different axis */
+.chip.tag { color: #b8a2e3; border-color: #4a3f66; }
+.tags { display: inline-flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.tags .tag {
+  display: inline-flex; align-items: center; gap: 3px; font-size: 11px;
+  background: var(--panel2); border: 1px solid #4a3f66; color: #b8a2e3;
+  border-radius: 3px; padding: 0 3px 0 6px;
+}
+.tags .tag button { border: 0; background: none; padding: 0 2px; color: var(--dim2); }
+.tags .tag button:hover { color: var(--err); }
 .link-to { color: var(--accent); }
 .prob { padding: 4px 0; border-bottom: 1px solid #23262d; }
 .prob .k { display: inline-block; width: 52px; }
@@ -250,8 +260,25 @@ dialog .opt:hover { background: #24405f; }
 .combomenu .opt:hover, .combomenu .opt.active { background: #24405f; }
 .combomenu .opt.cur { color: var(--accent); }
 
+/* A view quietly showing a subset is how you conclude something is missing when
+   it is only hidden, so say so and offer the way out. */
+.filternote {
+  margin: 6px 0; padding: 5px 9px; border-radius: 4px;
+  background: #24405f; border: 1px solid #34567d; color: var(--fg); font-size: 12px;
+}
+.filternote button { margin-left: 6px; }
+
 .empty { color: var(--dim2); padding: 18px 0; }
 .hint { color: var(--dim2); font-size: 12px; max-width: 760px; margin: -2px 0 8px; }
+details.hint > summary {
+  cursor: pointer; color: var(--dim2); list-style: none;
+  display: inline-flex; align-items: center; gap: 5px; padding: 1px 0;
+}
+details.hint > summary::-webkit-details-marker { display: none; }
+details.hint > summary::before { content: '?'; color: var(--accent); }
+details.hint > summary:hover { color: var(--fg); }
+details.hint[open] > summary::before { content: '\2212'; }
+details.hint > div { margin-top: 4px; }
 .hint b { color: var(--dim); font-weight: 600; }
 /* Per-control help. Guidance used to live only in a paragraph at the top of the
    view, so an individual input had nothing explaining it. */
